@@ -3,16 +3,44 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>调音器 + 自动BPM(♩) + 拍手定拍号/起拍 + 同步节拍器（AudioWorklet）</title>
+  <title>调音器 + 录音前设定BPM + 录音中节拍器(声音+闪灯)（AudioWorklet）</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header>
-    <h1>调音器 + 自动 BPM(♩) + 拍手定拍号/起拍 + 同步节拍器</h1>
-    <p class="sub">录音（人声/双簧管）→ 实时音高 → 录后分析：♩=BPM + 拍点相位（可用“拍手计数”强制对齐）→ WebAudio 回放叠加节拍器</p>
+    <h1>调音器 + 录音前设定 BPM + 录音中节拍器（声音+闪灯）</h1>
+    <p class="sub">先设定 ♩BPM → 点击录音后节拍器一直响，同时绿灯按“正拍/半拍”闪烁 → 结束后可回放（可选叠加节拍器）</p>
   </header>
 
   <main>
+    <section class="card">
+      <h2>节拍器设置（录音前）</h2>
+      <div class="row">
+        <label class="bpm">
+          ♩ BPM
+          <input id="bpmInput" type="number" min="30" max="240" step="1" value="90" />
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="metDuringRec" checked />
+          录音中开启节拍器
+        </label>
+        <label class="slider">
+          录音中节拍器音量
+          <input type="range" id="metGainRec" min="0" max="1" step="0.01" value="0.25" />
+          <span id="metGainRecVal">0.25</span>
+        </label>
+      </div>
+
+      <div class="row">
+        <div class="ledWrap">
+          <div id="ledBeat" class="led"></div>
+          <div class="small">绿灯：正拍亮；半拍弱闪</div>
+        </div>
+      </div>
+
+      <p class="small">说明：录音时节拍器通过 WebAudio 播放给你听；录音文件本身不会“直接混入”节拍器（除非麦克风拾音到外放）。</p>
+    </section>
+
     <section class="card">
       <h2>录音与实时音准</h2>
       <div class="row">
@@ -35,58 +63,36 @@
           <div class="value" id="cents">—</div>
         </div>
         <div class="metric">
-          <div class="label">四分音符速度</div>
+          <div class="label">设定速度</div>
           <div class="value" id="tempo">♩=—</div>
         </div>
         <div class="metric">
-          <div class="label">Tempo 置信度</div>
-          <div class="value" id="tempoConf">—</div>
+          <div class="label">录音时长</div>
+          <div class="value" id="dur">—</div>
         </div>
-      </div>
-
-      <div class="hint">
-        <ul>
-          <li><b>推荐操作：</b>开始录音后，先拍手“等间隔”计数：<b>3下=3/4</b>，<b>4下=4/4</b>；如果要更稳（或有起拍困扰），用 <b>7下(3/4)</b> 或 <b>5下(4/4)</b>（相当于“多拍到下一次第一拍”）。然后再开始演奏。</li>
-          <li>系统会优先用拍手来锁定：<b>BPM + 拍号 + 起拍（小节第一拍）</b>；若未检测到稳定拍手，会回退到自动节奏分析。</li>
-          <li>你之后把既有的分段/换音确认逻辑接入 <code>src/dsp/pitchTracker.js</code> 即可。</li>
-        </ul>
       </div>
     </section>
 
     <section class="card">
       <h2>回放 + 节拍器</h2>
       <div class="row">
-        <button id="btnPlay" disabled>回放（同步节拍器）</button>
+        <button id="btnPlay" disabled>回放</button>
         <button id="btnStopPlay" disabled>停止回放</button>
       </div>
 
       <div class="row">
         <label class="checkbox">
           <input type="checkbox" id="metOn" checked />
-          启用节拍器
+          回放时叠加节拍器
         </label>
-        <label class="checkbox">
-          <input type="checkbox" id="accentOn" checked />
-          强调小节第一拍
-        </label>
-      </div>
-
-      <div class="row">
         <label class="slider">
-          节拍器音量
-          <input type="range" id="metGain" min="0" max="1" step="0.01" value="0.25" />
-          <span id="metGainVal">0.25</span>
+          回放节拍器音量
+          <input type="range" id="metGainPlay" min="0" max="1" step="0.01" value="0.25" />
+          <span id="metGainPlayVal">0.25</span>
         </label>
       </div>
 
-      <div class="row">
-        <div class="small">录音时长：<span id="dur">—</span></div>
-        <div class="small">拍点对齐偏移：<span id="beatOffset">—</span></div>
-        <div class="small">拍号：<span id="meter">—</span></div>
-        <div class="small">拍手检测：<span id="clap">—</span></div>
-      </div>
-
-      <p class="small">提示：必须通过本地服务器或 GitHub Pages（HTTPS）访问；AudioWorklet 需要安全上下文/模块加载。</p>
+      <p class="small">回放使用同一条 WebAudio 时间轴（避免手机端 <audio> 与节拍器不同步）。</p>
     </section>
 
     <section class="card">
@@ -103,15 +109,14 @@
     <section class="card">
       <h2>如何运行</h2>
       <ol>
-        <li>安装 Node.js（如果你没有）。</li>
-        <li>在本目录运行：<code>npx http-server -p 5173</code></li>
-        <li>浏览器打开：<code>http://localhost:5173</code></li>
+        <li>本地：在项目目录运行 <code>npx http-server -p 5173</code>，然后打开 <code>http://localhost:5173</code></li>
+        <li>手机：建议用 GitHub Pages（HTTPS）访问，确保 AudioWorklet 可用。</li>
       </ol>
     </section>
   </main>
 
   <footer>
-    <span class="small">AudioWorklet 同步版 V3 · 加入拍手定拍号/起拍 · 实时音准 + 报表</span>
+    <span class="small">AudioWorklet 录音中节拍器版 V6</span>
   </footer>
 
   <script type="module" src="./src/main.js"></script>

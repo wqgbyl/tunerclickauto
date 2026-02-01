@@ -62,3 +62,10 @@ code{background:#0f1621;border:1px solid var(--border);padding:2px 6px;border-ra
 @media (max-width: 900px){
   .grid{grid-template-columns: repeat(2, minmax(120px, 1fr));}
 }
+
+.bpm{display:flex;gap:10px;align-items:center;color:var(--muted)}
+.bpm input{width:90px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0f1621;color:var(--fg)}
+.ledWrap{display:flex;gap:12px;align-items:center}
+.led{width:22px;height:22px;border-radius:50%;background:#11331f;border:1px solid #1b4d2f;box-shadow:none}
+.led.on{background:#2ea043;border-color:#2ea043;box-shadow:0 0 18px rgba(46,160,67,.65)}
+.led.half{background:#1f6f3a;border-color:#1f6f3a;box-shadow:0 0 10px rgba(46,160,67,.35)}
