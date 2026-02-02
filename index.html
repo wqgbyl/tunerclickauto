@@ -3,42 +3,26 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>调音器 + 录音前设定BPM + 录音中节拍器(声音+闪灯)（AudioWorklet）</title>
+  <title>调音器 + BPM 设定 + 录音/上传分析（AudioWorklet）</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header>
-    <h1>调音器 + 录音前设定 BPM + 录音中节拍器（声音+闪灯）</h1>
-    <p class="sub">先设定 ♩BPM → 点击录音后节拍器一直响，同时绿灯按“正拍/半拍”闪烁 → 结束后可回放（可选叠加节拍器）</p>
+    <h1>调音器 + BPM 设定 + 录音/上传分析</h1>
+    <p class="sub">先设定 ♩BPM → 录音进行实时音准显示（录音时不再开启节拍器）→ 结束后回放可叠加节拍器，并生成稳定性分析报告</p>
   </header>
 
   <main>
     <section class="card">
-      <h2>节拍器设置（录音前）</h2>
+      <h2>节拍器设置（分析/回放用）</h2>
       <div class="row">
         <label class="bpm">
           ♩ BPM
           <input id="bpmInput" type="number" min="30" max="240" step="1" value="90" />
         </label>
-        <label class="checkbox">
-          <input type="checkbox" id="metDuringRec" checked />
-          录音中开启节拍器
-        </label>
-        <label class="slider">
-          录音中节拍器音量
-          <input type="range" id="metGainRec" min="0" max="1" step="0.01" value="0.25" />
-          <span id="metGainRecVal">0.25</span>
-        </label>
       </div>
 
-      <div class="row">
-        <div class="ledWrap">
-          <div id="ledBeat" class="led"></div>
-          <div class="small">绿灯：正拍亮；半拍弱闪</div>
-        </div>
-      </div>
-
-      <p class="small">说明：录音时节拍器通过 WebAudio 播放给你听；录音文件本身不会“直接混入”节拍器（除非麦克风拾音到外放）。</p>
+      <p class="small">说明：节拍器只用于回放/分析阶段，不在实时录制时播放。</p>
     </section>
 
     <section class="card">
@@ -96,11 +80,22 @@
     </section>
 
     <section class="card">
+      <h2>上传音频分析</h2>
+      <div class="row">
+        <input id="uploadAudio" type="file" accept="audio/*" />
+        <button id="btnUploadAnalyze">上传并分析</button>
+        <span id="uploadStatus" class="status">未选择文件</span>
+      </div>
+      <p class="small">上传音频后会进行音准统计与节拍稳定性评分，报告与录音共用。</p>
+    </section>
+
+    <section class="card">
       <h2>报表（本次录音概要）</h2>
       <div class="report">
         <div class="rrow"><span class="rk">平均|cents|</span><span class="rv" id="repMeanAbs">—</span></div>
         <div class="rrow"><span class="rk">10 cents 内比例</span><span class="rv" id="repIn10">—</span></div>
         <div class="rrow"><span class="rk">25 cents 内比例</span><span class="rv" id="repIn25">—</span></div>
+        <div class="rrow"><span class="rk">节拍速度稳定分数</span><span class="rv" id="repTempoStability">—</span></div>
         <div class="rrow"><span class="rk">样本数</span><span class="rv" id="repN">—</span></div>
         <div class="rrow"><span class="rk">常见音高(Top5)</span><span class="rv" id="repTop">—</span></div>
       </div>
@@ -116,7 +111,7 @@
   </main>
 
   <footer>
-    <span class="small">AudioWorklet 录音中节拍器版 V6</span>
+    <span class="small">AudioWorklet 录音分析版 V7</span>
   </footer>
 
   <script type="module" src="./src/main.js"></script>
