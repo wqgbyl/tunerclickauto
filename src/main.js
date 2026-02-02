@@ -1,4 +1,5 @@
 import { PitchTracker } from "./dsp/pitchTracker.js";
+import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
 
 const $ = (id) => document.getElementById(id);
@@ -18,6 +19,12 @@ const freqHzEl = $("freqHz");
 const centsEl = $("cents");
 const tempoEl = $("tempo");
 const durEl = $("dur");
+const detectedBpmEl = $("detectedBpm");
+const detectedConfEl = $("detectedConf");
+const detectedStartEl = $("detectedStart");
+const detectedRangeEl = $("detectedRange");
+const detectedDominantEl = $("detectedDominant");
+const detectedScoreEl = $("detectedScore");
 
 const btnPlay = $("btnPlay");
 const btnStopPlay = $("btnStopPlay");
@@ -49,6 +56,16 @@ let hopMs = 10;
 
 let pitchTracker = null;
 let analysisTimer = null;
+let detectedTempo = {
+  bpm: null,
+  confidence: 0,
+  beatOffsetSec: null,
+  tempoCurve: [],
+  beatTimes: [],
+  stats: null,
+};
+
+const tempoConfidenceThreshold = 0.35;
 
 class PCMQueue {
   constructor() { this.chunks = []; this.offset = 0; this.length = 0; }
@@ -226,11 +243,13 @@ async function stopRecording() {
   decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
+  const tempoResult = analyzeTempoOffline(decodedAudioBuffer);
+  updateDetectedTempo(tempoResult);
+
   renderReport(pitchLog);
 
   btnStart.disabled = false;
   btnPlay.disabled = false;
-  setStatus("已录制，准备回放");
 }
 
 function stopMediaRecorderSafely() {
@@ -331,18 +350,31 @@ async function play() {
 
   const startDelay = 0.03;
   const t0 = ctx.currentTime + startDelay;
+  const metOffset = (useMet && detectedTempo.beatOffsetSec != null && detectedTempo.confidence >= tempoConfidenceThreshold)
+    ? detectedTempo.beatOffsetSec
+    : 0;
+  const metStartTime = t0 + metOffset;
 
   let stopScheduler = null;
   if (useMet) {
-    stopScheduler = scheduleMetronome(ctx, {
-      bpm,
-      meter: 999999,
-      startTime: t0,
-      durationSec: decodedAudioBuffer.duration,
-      clickBufferStrong: clickStrong,
-      clickBufferWeak: clickStrong,
-      clickGainNode: clickGain,
-    });
+    if (detectedTempo.stats?.hasReliableCurve && detectedTempo.beatTimes.length) {
+      stopScheduler = scheduleAdaptiveMetronome(ctx, {
+        beatTimes: detectedTempo.beatTimes,
+        startTime: t0,
+        clickBuffer: clickStrong,
+        clickGainNode: clickGain,
+      });
+    } else {
+      stopScheduler = scheduleMetronome(ctx, {
+        bpm,
+        meter: 999999,
+        startTime: metStartTime,
+        durationSec: decodedAudioBuffer.duration,
+        clickBufferStrong: clickStrong,
+        clickBufferWeak: clickStrong,
+        clickGainNode: clickGain,
+      });
+    }
   }
 
   src.connect(musicGain);
@@ -361,6 +393,212 @@ function stopPlayback() {
   btnPlay.disabled = !decodedAudioBuffer;
   btnStopPlay.disabled = true;
   if (decodedAudioBuffer) setStatus("已录制，准备回放");
+}
+
+function analyzeTempoOffline(buffer) {
+  const sampleRate = buffer.sampleRate;
+  const channelData = mixdownToMono(buffer);
+  const tempoTracker = new TempoTracker({ sampleRate, frameSize, hopSize });
+
+  for (let i = 0; i + frameSize <= channelData.length; i += hopSize) {
+    tempoTracker.pushFrame(channelData.subarray(i, i + frameSize));
+  }
+
+  const result = tempoTracker.finalize();
+  const hopSec = hopSize / sampleRate;
+  const tempoCurve = buildTempoCurve(result.sm, hopSec, buffer.duration);
+  const stats = summarizeTempoCurve(tempoCurve);
+  const beatTimes = buildBeatTimeline({
+    tempoCurve,
+    beatOffsetSec: result.beatOffsetSec,
+    durationSec: buffer.duration,
+    fallbackBpm: result.bpm ?? getBpmPreset(),
+  });
+
+  return {
+    ...result,
+    tempoCurve,
+    stats,
+    beatTimes,
+  };
+}
+
+function updateDetectedTempo(result) {
+  if (!result) return;
+  const { bpm, confidence, beatOffsetSec, stats, beatTimes } = result;
+  const confPct = `${(confidence * 100).toFixed(1)}%`;
+  detectedConfEl.textContent = confPct;
+
+  if (bpm && confidence >= tempoConfidenceThreshold) {
+    detectedTempo = {
+      bpm,
+      confidence,
+      beatOffsetSec,
+      tempoCurve: result.tempoCurve ?? [],
+      beatTimes: beatTimes ?? [],
+      stats,
+    };
+    detectedBpmEl.textContent = `${bpm}`;
+    tempoEl.textContent = `♩=${getBpmPreset()}`;
+    setStatus("已录制，检测到 BPM，可回放对齐节拍");
+  } else {
+    detectedTempo = {
+      bpm: null,
+      confidence,
+      beatOffsetSec: null,
+      tempoCurve: result.tempoCurve ?? [],
+      beatTimes: [],
+      stats,
+    };
+    detectedBpmEl.textContent = bpm
+      ? `${bpm}（低置信度，请手动设置 BPM）`
+      : "低置信度，请手动设置 BPM";
+    setStatus("已录制，检测 BPM 置信度不足，请手动设置");
+  }
+
+  updateTempoStatsUI(stats);
+}
+
+function updateTempoStatsUI(stats) {
+  if (!stats) {
+    detectedStartEl.textContent = "—";
+    detectedRangeEl.textContent = "—";
+    detectedDominantEl.textContent = "—";
+    detectedScoreEl.textContent = "—";
+    return;
+  }
+  detectedStartEl.textContent = stats.startBpm ? `${stats.startBpm} BPM` : "—";
+  detectedRangeEl.textContent = stats.minBpm && stats.maxBpm
+    ? `${stats.minBpm}–${stats.maxBpm} BPM`
+    : "—";
+  detectedDominantEl.textContent = stats.dominantBpm ? `${stats.dominantBpm} BPM` : "—";
+  detectedScoreEl.textContent = stats.score != null ? `${stats.score.toFixed(0)} 分` : "—";
+}
+
+function mixdownToMono(buffer) {
+  if (buffer.numberOfChannels === 1) return buffer.getChannelData(0);
+  const length = buffer.length;
+  const mono = new Float32Array(length);
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < length; i++) mono[i] += data[i];
+  }
+  for (let i = 0; i < length; i++) mono[i] /= buffer.numberOfChannels;
+  return mono;
+}
+
+function buildTempoCurve(sm, hopSec, durationSec, minBPM = 40, maxBPM = 200) {
+  if (!sm || !sm.length) return [];
+  const windowSec = 8;
+  const stepSec = 1.5;
+  const windowFrames = Math.max(8, Math.floor(windowSec / hopSec));
+  const stepFrames = Math.max(1, Math.floor(stepSec / hopSec));
+  const curve = [];
+
+  for (let start = 0; start + windowFrames <= sm.length; start += stepFrames) {
+    const end = start + windowFrames;
+    const timeSec = Math.min(durationSec, (start + windowFrames / 2) * hopSec);
+    const { bpm, confidence } = estimateBpmFromOnset(sm, hopSec, start, end, minBPM, maxBPM);
+    if (bpm) curve.push({ timeSec, bpm, confidence });
+  }
+  return curve;
+}
+
+function estimateBpmFromOnset(sm, hopSec, startIdx, endIdx, minBPM, maxBPM) {
+  const seg = sm.slice(startIdx, endIdx);
+  if (seg.length < 8) return { bpm: null, confidence: 0 };
+
+  let maxVal = 1e-12;
+  for (const v of seg) if (v > maxVal) maxVal = v;
+  for (let i = 0; i < seg.length; i++) seg[i] /= maxVal;
+
+  const minLag = Math.floor((60 / maxBPM) / hopSec);
+  const maxLag = Math.min(seg.length - 2, Math.floor((60 / minBPM) / hopSec));
+  if (maxLag <= minLag) return { bpm: null, confidence: 0 };
+
+  const acf = new Float32Array(maxLag + 1);
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let s = 0;
+    for (let i = 0; i + lag < seg.length; i++) s += seg[i] * seg[i + lag];
+    acf[lag] = s;
+  }
+
+  const peaks = [];
+  for (let lag = minLag + 1; lag < maxLag - 1; lag++) {
+    if (acf[lag] > acf[lag - 1] && acf[lag] > acf[lag + 1]) peaks.push({ lag, val: acf[lag] });
+  }
+  if (!peaks.length) return { bpm: null, confidence: 0 };
+
+  peaks.sort((a, b) => b.val - a.val);
+  const top = peaks.slice(0, 6);
+  const totalStrength = top.reduce((s, p) => s + p.val, 1e-9);
+  const best = top[0];
+  const bpm = Math.round(60 / (best.lag * hopSec));
+  const confidence = best.val / totalStrength;
+  return { bpm, confidence };
+}
+
+function summarizeTempoCurve(curve) {
+  if (!curve.length) return null;
+  const reliable = curve.filter((p) => p.confidence >= tempoConfidenceThreshold);
+  if (!reliable.length) return { hasReliableCurve: false };
+  const bpms = reliable.map((p) => p.bpm);
+  const startBpm = reliable[0]?.bpm ?? null;
+  const minBpm = Math.min(...bpms);
+  const maxBpm = Math.max(...bpms);
+
+  const histogram = new Map();
+  for (const bpm of bpms) {
+    const key = Math.round(bpm);
+    histogram.set(key, (histogram.get(key) || 0) + 1);
+  }
+  const sorted = [...histogram.entries()].sort((a, b) => b[1] - a[1]);
+  const dominantBpm = sorted[0]?.[0] ?? null;
+  const dominantRatio = sorted[0]?.[1] ? sorted[0][1] / bpms.length : 0;
+  const score = Math.min(100, Math.max(0, dominantRatio * 100));
+
+  return {
+    hasReliableCurve: true,
+    startBpm,
+    minBpm,
+    maxBpm,
+    dominantBpm,
+    score,
+  };
+}
+
+function buildBeatTimeline({ tempoCurve, beatOffsetSec, durationSec, fallbackBpm }) {
+  if (!tempoCurve.length || !isFinite(durationSec)) return [];
+  const sorted = [...tempoCurve].sort((a, b) => a.timeSec - b.timeSec);
+  const beats = [];
+  let t = Math.max(0, beatOffsetSec || 0);
+  let idx = 0;
+  while (t < durationSec) {
+    while (idx + 1 < sorted.length && sorted[idx + 1].timeSec <= t) idx++;
+    const bpm = sorted[idx]?.bpm || fallbackBpm;
+    const interval = bpm ? 60 / bpm : 0;
+    if (!interval) break;
+    beats.push(t);
+    t += interval;
+  }
+  return beats;
+}
+
+function scheduleAdaptiveMetronome(ctx, { beatTimes, startTime, clickBuffer, clickGainNode }) {
+  const sources = [];
+  for (const beatTime of beatTimes) {
+    const src = ctx.createBufferSource();
+    src.buffer = clickBuffer;
+    src.connect(clickGainNode);
+    src.start(startTime + beatTime);
+    sources.push(src);
+  }
+  return () => {
+    for (const src of sources) {
+      try { src.stop(); } catch {}
+      try { src.disconnect(); } catch {}
+    }
+  };
 }
 
 function renderReport(log) {
@@ -394,6 +632,20 @@ function resetUIForNewTake() {
   freqHzEl.textContent = "—";
   centsEl.textContent = "—";
   durEl.textContent = "—";
+  detectedBpmEl.textContent = "—";
+  detectedConfEl.textContent = "—";
+  detectedStartEl.textContent = "—";
+  detectedRangeEl.textContent = "—";
+  detectedDominantEl.textContent = "—";
+  detectedScoreEl.textContent = "—";
+  detectedTempo = {
+    bpm: null,
+    confidence: 0,
+    beatOffsetSec: null,
+    tempoCurve: [],
+    beatTimes: [],
+    stats: null,
+  };
 
   repMeanAbs.textContent = "—";
   repIn10.textContent = "—";
