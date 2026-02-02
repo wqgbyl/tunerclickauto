@@ -8,10 +8,6 @@ const btnStop = $("btnStop");
 const statusEl = $("status");
 
 const bpmInput = $("bpmInput");
-const metDuringRec = $("metDuringRec");
-const metGainRec = $("metGainRec");
-const metGainRecVal = $("metGainRecVal");
-const ledBeat = $("ledBeat");
 
 const noteNameEl = $("noteName");
 const freqHzEl = $("freqHz");
@@ -25,13 +21,17 @@ const metOn = $("metOn");
 const metGainPlay = $("metGainPlay");
 const metGainPlayVal = $("metGainPlayVal");
 
+const uploadAudio = $("uploadAudio");
+const btnUploadAnalyze = $("btnUploadAnalyze");
+const uploadStatus = $("uploadStatus");
+
 const repMeanAbs = $("repMeanAbs");
 const repIn10 = $("repIn10");
 const repIn25 = $("repIn25");
+const repTempoStability = $("repTempoStability");
 const repN = $("repN");
 const repTop = $("repTop");
 
-metGainRec.addEventListener("input", () => metGainRecVal.textContent = Number(metGainRec.value).toFixed(2));
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
 
 let audioCtx = null;
@@ -80,15 +80,6 @@ let hopCount = 0;
 // report samples
 let pitchLog = [];
 
-// metronome during recording
-let recMet = {
-  stopScheduler: null,
-  gainNode: null,
-  startTime: 0,
-  bpm: 0,
-  ledTimer: null,
-};
-
 // playback state
 let playback = {
   source: null,
@@ -103,6 +94,10 @@ btnStart.addEventListener("click", startRecording);
 btnStop.addEventListener("click", stopRecording);
 btnPlay.addEventListener("click", play);
 btnStopPlay.addEventListener("click", stopPlayback);
+btnUploadAnalyze.addEventListener("click", analyzeUploadedAudio);
+uploadAudio.addEventListener("change", () => {
+  uploadStatus.textContent = uploadAudio.files?.[0]?.name || "未选择文件";
+});
 
 async function ensureAudioContext() {
   if (audioCtx) return audioCtx;
@@ -163,10 +158,7 @@ async function startRecording() {
     if (e.data?.type === "pcm") pcmQueue.push(e.data.pcm);
   };
 
-  // Start metronome DURING recording (sound + LED)
-  if (metDuringRec.checked) startRecordingMetronome(ctx, bpm);
-
-  setStatus("录音中…（节拍器已启动）");
+  setStatus("录音中…（实时分析中）");
 
   if (analysisTimer) clearInterval(analysisTimer);
   analysisTimer = setInterval(analysisHopTick, hopMs);
@@ -208,8 +200,6 @@ async function stopRecording() {
 
   if (analysisTimer) { clearInterval(analysisTimer); analysisTimer = null; }
 
-  stopRecordingMetronome();
-
   const blob = await stopMediaRecorderSafely();
 
   if (micStream) micStream.getTracks().forEach(t => t.stop());
@@ -226,7 +216,8 @@ async function stopRecording() {
   decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
-  renderReport(pitchLog);
+  const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
+  renderReport(report);
 
   btnStart.disabled = false;
   btnPlay.disabled = false;
@@ -242,64 +233,6 @@ function stopMediaRecorderSafely() {
     mr.onstop = () => resolve(new Blob(recordedChunks, { type: mr.mimeType || "audio/webm" }));
     try { mr.stop(); } catch { resolve(new Blob(recordedChunks, { type: mr.mimeType || "audio/webm" })); }
   });
-}
-
-function startRecordingMetronome(ctx, bpm) {
-  stopRecordingMetronome();
-  recMet.bpm = bpm;
-
-  const gain = ctx.createGain();
-  gain.gain.value = Number(metGainRec.value);
-  gain.connect(ctx.destination);
-
-  const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
-  const clickWeak = createClickBuffer(ctx, { freq: 1400, durationMs: 12 });
-
-  // Start a tiny bit later to reduce "button press" jitter
-  const startDelay = 0.03;
-  const t0 = ctx.currentTime + startDelay;
-  recMet.startTime = t0;
-  recMet.gainNode = gain;
-
-  // Use meter=2 with strong/weak = beat/half-beat? We'll schedule at quarter-note BPM and use LED for half-beat separately.
-  recMet.stopScheduler = scheduleMetronome(ctx, {
-    bpm,
-    meter: 999999, // no accent in audio (all strong)
-    startTime: t0,
-    durationSec: 3600, // effectively until stop
-    clickBufferStrong: clickStrong,
-    clickBufferWeak: clickStrong,
-    clickGainNode: gain,
-  });
-
-  // LED timer: flash on beat and half-beat
-  if (recMet.ledTimer) clearInterval(recMet.ledTimer);
-  recMet.ledTimer = setInterval(() => {
-    const now = ctx.currentTime;
-    const dt = now - recMet.startTime;
-    if (dt < 0) return;
-    const interval = 60 / bpm;
-    const phase = dt % interval;
-    const halfPhase = dt % (interval / 2);
-
-    // beat flash window
-    if (phase < 0.03) setLed("on");
-    else if (halfPhase < 0.03) setLed("half");
-    else setLed("off");
-  }, 10);
-}
-
-function stopRecordingMetronome() {
-  if (recMet.stopScheduler) { recMet.stopScheduler(); recMet.stopScheduler = null; }
-  if (recMet.ledTimer) { clearInterval(recMet.ledTimer); recMet.ledTimer = null; }
-  if (recMet.gainNode) { try { recMet.gainNode.disconnect(); } catch {} recMet.gainNode = null; }
-  setLed("off");
-}
-
-function setLed(mode) {
-  ledBeat.classList.remove("on","half");
-  if (mode === "on") ledBeat.classList.add("on");
-  else if (mode === "half") ledBeat.classList.add("half");
 }
 
 async function play() {
@@ -363,16 +296,18 @@ function stopPlayback() {
   if (decodedAudioBuffer) setStatus("已录制，准备回放");
 }
 
-function renderReport(log) {
-  if (!log || log.length === 0) {
+function renderReport(report) {
+  if (!report || !report.pitchLog || report.pitchLog.length === 0) {
     repMeanAbs.textContent = "—";
     repIn10.textContent = "—";
     repIn25.textContent = "—";
+    repTempoStability.textContent = "—";
     repN.textContent = "0";
     repTop.textContent = "—";
     return;
   }
-  const centsAbs = log.map(x => Math.abs(x.cents));
+  const { pitchLog, tempoStability } = report;
+  const centsAbs = pitchLog.map(x => Math.abs(x.cents));
   const meanAbs = centsAbs.reduce((a,b)=>a+b,0) / centsAbs.length;
   const in10 = centsAbs.filter(x => x <= 10).length / centsAbs.length;
   const in25 = centsAbs.filter(x => x <= 25).length / centsAbs.length;
@@ -380,10 +315,11 @@ function renderReport(log) {
   repMeanAbs.textContent = meanAbs.toFixed(1);
   repIn10.textContent = (in10*100).toFixed(1) + "%";
   repIn25.textContent = (in25*100).toFixed(1) + "%";
-  repN.textContent = String(log.length);
+  repTempoStability.textContent = tempoStability === null ? "—" : `${tempoStability.toFixed(1)} / 100`;
+  repN.textContent = String(pitchLog.length);
 
   const counts = new Map();
-  for (const x of log) counts.set(x.noteName, (counts.get(x.noteName)||0)+1);
+  for (const x of pitchLog) counts.set(x.noteName, (counts.get(x.noteName)||0)+1);
   const top = [...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([k,v])=>`${k}(${v})`).join(", ");
   repTop.textContent = top || "—";
@@ -398,10 +334,113 @@ function resetUIForNewTake() {
   repMeanAbs.textContent = "—";
   repIn10.textContent = "—";
   repIn25.textContent = "—";
+  repTempoStability.textContent = "—";
   repN.textContent = "—";
   repTop.textContent = "—";
-
-  setLed("off");
 }
 
 function setStatus(s) { statusEl.textContent = s; }
+
+async function analyzeUploadedAudio() {
+  const file = uploadAudio.files?.[0];
+  if (!file) {
+    uploadStatus.textContent = "请先选择音频文件";
+    return;
+  }
+
+  try {
+    uploadStatus.textContent = "解析中…";
+    const ctx = await ensureAudioContext();
+    await ctx.resume();
+    const buf = await file.arrayBuffer();
+    decodedAudioBuffer = await ctx.decodeAudioData(buf.slice(0));
+    durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
+
+    const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
+    renderReport(report);
+
+    btnPlay.disabled = false;
+    uploadStatus.textContent = "分析完成";
+    setStatus("已上传音频，准备回放");
+  } catch (err) {
+    console.error(err);
+    uploadStatus.textContent = "解析失败，请尝试其他音频格式";
+  }
+}
+
+function analyzeAudioBuffer(buffer, { bpm }) {
+  const sampleRate = buffer.sampleRate;
+  const data = buffer.getChannelData(0);
+  const localHopSize = Math.max(240, Math.round(sampleRate * 0.01));
+  const tracker = new PitchTracker({ sampleRate });
+  const pitchLogLocal = [];
+
+  let frame = new Float32Array(frameSize);
+  if (data.length >= frameSize) frame.set(data.subarray(0, frameSize));
+
+  let tSec = 0;
+  for (let offset = 0; offset + frameSize <= data.length; offset += localHopSize) {
+    if (offset !== 0) {
+      frame.copyWithin(0, localHopSize);
+      frame.set(data.subarray(offset + frameSize - localHopSize, offset + frameSize), frameSize - localHopSize);
+    }
+    const pitch = tracker.pushFrame(frame);
+    if (pitch) {
+      if (pitchLogLocal.length === 0 || (tSec - pitchLogLocal[pitchLogLocal.length - 1].tSec) > 0.03) {
+        pitchLogLocal.push({ tSec, noteName: pitch.noteName, cents: pitch.cents, freqHz: pitch.freqHz });
+      }
+    }
+    tSec = offset / sampleRate;
+  }
+
+  const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
+  return { pitchLog: pitchLogLocal, tempoStability };
+}
+
+function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
+  if (!isFinite(bpm) || bpm <= 0) return null;
+  const frame = new Float32Array(hopSizeLocal);
+  const rms = [];
+  for (let i = 0; i + hopSizeLocal <= data.length; i += hopSizeLocal) {
+    frame.set(data.subarray(i, i + hopSizeLocal));
+    let sum = 0;
+    for (let j = 0; j < frame.length; j++) {
+      const v = frame[j];
+      sum += v * v;
+    }
+    rms.push(Math.sqrt(sum / frame.length));
+  }
+  if (rms.length < 4) return null;
+
+  const mean = rms.reduce((a,b)=>a+b,0) / rms.length;
+  const variance = rms.reduce((a,b)=>a+(b-mean)*(b-mean),0) / rms.length;
+  const std = Math.sqrt(variance);
+  const threshold = mean + std * 0.5;
+
+  const minInterval = Math.round((sampleRate / hopSizeLocal) * 0.2);
+  const peaks = [];
+  for (let i = 1; i < rms.length - 1; i++) {
+    if (rms[i] > threshold && rms[i] > rms[i-1] && rms[i] > rms[i+1]) {
+      if (peaks.length === 0 || (i - peaks[peaks.length - 1]) >= minInterval) {
+        peaks.push(i);
+      }
+    }
+  }
+  if (peaks.length < 3) return null;
+
+  const intervals = [];
+  for (let i = 1; i < peaks.length; i++) {
+    intervals.push((peaks[i] - peaks[i-1]) * (hopSizeLocal / sampleRate));
+  }
+  const intervalMean = intervals.reduce((a,b)=>a+b,0) / intervals.length;
+  const intervalVar = intervals.reduce((a,b)=>a+(b-intervalMean)*(b-intervalMean),0) / intervals.length;
+  const intervalStd = Math.sqrt(intervalVar);
+
+  const targetInterval = 60 / bpm;
+  const jitterRatio = intervalStd / intervalMean;
+  const offsetRatio = Math.abs(intervalMean - targetInterval) / targetInterval;
+
+  const penalty = Math.min(1, jitterRatio * 2 + offsetRatio * 1.5);
+  const score = Math.max(0, 1 - penalty) * 100;
+  return score;
+}
