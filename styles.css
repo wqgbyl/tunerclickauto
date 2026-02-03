@@ -102,18 +102,6 @@ button[disabled]{opacity:.4;cursor:not-allowed}
 .value{font-size:18px;font-weight:700}
 .hint{color:var(--muted);font-size:13px;line-height:1.55}
 .small{color:var(--muted);font-size:12px}
-.footer-ad{
-  color:var(--fg);
-  font-size:13px;
-}
-.footer-ad a{
-  color:var(--accent);
-  text-decoration:none;
-  font-weight:700;
-}
-.footer-ad a:hover{
-  text-decoration:underline;
-}
 .tempo-live{align-items:baseline}
 .tempo-live .value{font-size:20px}
 .slider{display:flex;gap:10px;align-items:center;color:var(--muted)}
