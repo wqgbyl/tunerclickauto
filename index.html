@@ -76,7 +76,22 @@
         </label>
       </div>
 
+      <div class="row tempo-live">
+        <span class="label">实时速度</span>
+        <span class="value" id="tempoLive">—</span>
+      </div>
+
       <p class="small">回放使用同一条 WebAudio 时间轴（避免手机端 <audio> 与节拍器不同步）。</p>
+    </section>
+
+    <section class="card">
+      <h2>导出同步视频</h2>
+      <div class="row">
+        <button id="btnExportVideo" disabled>导出同步视频</button>
+        <span id="exportStatus" class="status">未生成</span>
+        <a id="exportLink" class="download" download="metronome-sync.webm">下载视频</a>
+      </div>
+      <p class="small">导出视频会叠加节拍器声音，并按音乐律动实时标记速度。</p>
     </section>
 
     <section class="card">
