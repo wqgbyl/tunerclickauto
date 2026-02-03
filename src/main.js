@@ -46,6 +46,7 @@ let recordedChunks = [];
 let decodedAudioBuffer = null;
 let detectedTempo = null;
 let beatTimeline = null;
+let analyzedPitchLog = [];
 
 let workletNode = null;
 
@@ -397,6 +398,7 @@ function renderReport(report) {
 function resetUIForNewTake() {
   detectedTempo = null;
   beatTimeline = null;
+  analyzedPitchLog = [];
   noteNameEl.textContent = "—";
   freqHzEl.textContent = "—";
   centsEl.textContent = "—";
@@ -440,6 +442,7 @@ async function analyzeUploadedAudio() {
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
     updateDetectedTempo(report.detectedTempo);
     beatTimeline = report.beatTimeline;
+    analyzedPitchLog = report.pitchLog || [];
     renderReport(report);
 
     btnPlay.disabled = false;
@@ -555,6 +558,9 @@ async function exportVideo() {
   let currentBpm = useDynamicBeats
     ? (beatBpms?.[1] ?? beatBpms?.[0] ?? getBpmPreset())
     : getBpmPreset();
+  const pitchData = Array.isArray(analyzedPitchLog) ? analyzedPitchLog : [];
+  let pitchIndex = 0;
+  let currentPitch = null;
 
   const drawFrame = () => {
     const now = ctx.currentTime;
@@ -570,6 +576,10 @@ async function exportVideo() {
           currentBpm = beatBpms[beatIndex];
         }
         beatIndex++;
+      }
+      while (pitchIndex < pitchData.length && pitchData[pitchIndex].tSec <= elapsed) {
+        currentPitch = pitchData[pitchIndex];
+        pitchIndex++;
       }
     }
 
@@ -591,6 +601,21 @@ async function exportVideo() {
     c2d.font = "400 26px system-ui, sans-serif";
     c2d.fillStyle = "#8b949e";
     c2d.fillText("同步节拍器导出", centerX, centerY + 72);
+
+    c2d.font = "600 40px system-ui, sans-serif";
+    c2d.fillStyle = "#f0f6fc";
+    const noteLabel = currentPitch?.noteName ? currentPitch.noteName : "—";
+    c2d.fillText(`音准：${noteLabel}`, centerX, centerY + 140);
+
+    c2d.font = "400 24px system-ui, sans-serif";
+    c2d.fillStyle = "#8b949e";
+    const freqLabel = Number.isFinite(currentPitch?.freqHz)
+      ? `${currentPitch.freqHz.toFixed(1)} Hz`
+      : "—";
+    const centsLabel = Number.isFinite(currentPitch?.cents)
+      ? `${currentPitch.cents} cents`
+      : "—";
+    c2d.fillText(`${freqLabel} · ${centsLabel}`, centerX, centerY + 178);
 
     if (elapsed < durationSec + 0.5) {
       requestAnimationFrame(drawFrame);
