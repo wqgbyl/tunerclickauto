@@ -622,10 +622,14 @@ async function exportVideo() {
   let currentBpm = useDynamicBeats
     ? (beatBpms?.[1] ?? beatBpms?.[0] ?? getBpmPreset())
     : getBpmPreset();
-  const pitchData = Array.isArray(analyzedPitchLog) ? analyzedPitchLog : [];
+  const fallbackPitchLog = analyzedPitchLog?.length ? analyzedPitchLog : pitchLog;
+  const pitchData = Array.isArray(fallbackPitchLog) ? fallbackPitchLog : [];
   let pitchIndex = 0;
   let currentPitch = null;
-  const harmonyData = Array.isArray(analyzedHarmonyLog) ? analyzedHarmonyLog : [];
+  const fallbackHarmonyLog = analyzedHarmonyLog?.length
+    ? analyzedHarmonyLog
+    : buildHarmonyLog(pitchData, { windowSec: 0.7, stepSec: 0.25 });
+  const harmonyData = Array.isArray(fallbackHarmonyLog) ? fallbackHarmonyLog : [];
   let harmonyIndex = 0;
   let currentHarmony = null;
 
