@@ -1020,27 +1020,27 @@ function detectChordFromPitchClasses(pitchClasses) {
   const total = counts.reduce((a, b) => a + b, 0);
   if (total < 2) return null;
   const chordTypes = [
-    { name: "", intervals: [0, 4, 7] },
-    { name: "m", intervals: [0, 3, 7] },
-    { name: "sus2", intervals: [0, 2, 7] },
-    { name: "sus4", intervals: [0, 5, 7] },
-    { name: "dim", intervals: [0, 3, 6] },
-    { name: "aug", intervals: [0, 4, 8] },
+    { name: "", intervals: [0, 4, 7] }, // major
+    { name: "m", intervals: [0, 3, 7] }, // minor
   ];
   let best = { score: 0, name: null };
   for (let root = 0; root < 12; root++) {
     for (const chord of chordTypes) {
       let score = 0;
+      let hits = 0;
       for (const interval of chord.intervals) {
-        score += counts[(root + interval) % 12];
+        const val = counts[(root + interval) % 12];
+        if (val > 0) hits++;
+        score += val;
       }
-      if (counts[root] > 0) score += 0.5;
+      if (hits < 2) continue;
+      if (counts[root] > 0) score += 0.75;
       if (score > best.score) {
         best = { score, name: `${pitchClassName(root)}${chord.name}` };
       }
     }
   }
-  if (best.score / total < 0.5 || best.score < 2) return null;
+  if (best.score / total < 0.55 || best.score < 2) return null;
   return best.name;
 }
 
