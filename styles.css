@@ -14,6 +14,7 @@ body{
   color:var(--fg);
 }
 header,footer{max-width:980px;margin:0 auto;padding:22px 18px}
+footer{display:flex;flex-direction:column;gap:10px}
 h1{margin:0 0 6px 0;font-size:22px}
 .sub{margin:0;color:var(--muted);line-height:1.4}
 main{max-width:980px;margin:0 auto;padding:0 18px 40px 18px}
@@ -101,6 +102,18 @@ button[disabled]{opacity:.4;cursor:not-allowed}
 .value{font-size:18px;font-weight:700}
 .hint{color:var(--muted);font-size:13px;line-height:1.55}
 .small{color:var(--muted);font-size:12px}
+.footer-ad{
+  color:var(--fg);
+  font-size:13px;
+}
+.footer-ad a{
+  color:var(--accent);
+  text-decoration:none;
+  font-weight:700;
+}
+.footer-ad a:hover{
+  text-decoration:underline;
+}
 .tempo-live{align-items:baseline}
 .tempo-live .value{font-size:20px}
 .slider{display:flex;gap:10px;align-items:center;color:var(--muted)}
