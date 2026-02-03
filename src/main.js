@@ -256,9 +256,30 @@ async function stopRecording() {
     workletNode = null;
   }
 
+  if (!blob || blob.size === 0) {
+    decodedAudioBuffer = null;
+    durEl.textContent = "0.00s";
+    btnStart.disabled = false;
+    btnPlay.disabled = true;
+    btnExportVideo.disabled = true;
+    setStatus("未检测到录音内容，可直接重新录制");
+    return;
+  }
+
   const ctx = await ensureAudioContext();
-  const arrayBuf = await blob.arrayBuffer();
-  decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
+  try {
+    const arrayBuf = await blob.arrayBuffer();
+    decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
+  } catch (err) {
+    decodedAudioBuffer = null;
+    durEl.textContent = "0.00s";
+    btnStart.disabled = false;
+    btnPlay.disabled = true;
+    btnExportVideo.disabled = true;
+    setStatus("录音为空或解码失败，可直接重新录制");
+    return;
+  }
+
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
   const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
@@ -279,8 +300,26 @@ function stopMediaRecorderSafely() {
     const mr = mediaRecorder;
     mediaRecorder = null;
 
-    mr.onstop = () => resolve(new Blob(recordedChunks, { type: mr.mimeType || "audio/webm" }));
-    try { mr.stop(); } catch { resolve(new Blob(recordedChunks, { type: mr.mimeType || "audio/webm" })); }
+    let settled = false;
+    const finalize = () => {
+      if (settled) return;
+      settled = true;
+      resolve(new Blob(recordedChunks, { type: mr.mimeType || "audio/webm" }));
+    };
+
+    mr.onstop = finalize;
+
+    if (mr.state === "inactive") {
+      return finalize();
+    }
+
+    const timeoutId = setTimeout(finalize, 800);
+    mr.onstop = () => {
+      clearTimeout(timeoutId);
+      finalize();
+    };
+
+    try { mr.stop(); } catch { finalize(); }
   });
 }
 
