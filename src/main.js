@@ -749,12 +749,20 @@ function analyzeAudioBuffer(buffer, { bpm }) {
     tSec = offset / sampleRate;
   }
 
-  const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
   const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
   const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize, {
     baseBpm: detectedTempo?.bpm ?? bpm,
     beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
   });
+  const tempoStability = computeTempoStabilityFromBeats(
+    beatTimeline,
+    detectedTempo?.bpm ?? bpm,
+  ) ?? computeTempoStability(
+    data,
+    sampleRate,
+    localHopSize,
+    detectedTempo?.bpm ?? bpm,
+  );
   const harmonyLog = buildHarmonyLog(pitchLogLocal, { windowSec: 0.7, stepSec: 0.25 });
   const harmonySummary = summarizeHarmony(harmonyLog, buffer.duration, 3);
   return { pitchLog: pitchLogLocal, harmonyLog, harmonySummary, tempoStability, detectedTempo, beatTimeline };
@@ -803,6 +811,27 @@ function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
   const jitterRatio = intervalStd / intervalMean;
   const offsetRatio = Math.abs(intervalMean - targetInterval) / targetInterval;
 
+  const penalty = Math.min(1, jitterRatio * 2 + offsetRatio * 1.5);
+  const score = Math.max(0, 1 - penalty) * 100;
+  return score;
+}
+
+function computeTempoStabilityFromBeats(beatTimeline, bpm) {
+  if (!beatTimeline?.beatTimes?.length || !isFinite(bpm) || bpm <= 0) return null;
+  const beatTimes = beatTimeline.beatTimes;
+  if (beatTimes.length < 4) return null;
+  const intervals = [];
+  for (let i = 1; i < beatTimes.length; i++) {
+    const interval = beatTimes[i] - beatTimes[i - 1];
+    if (interval > 0) intervals.push(interval);
+  }
+  if (intervals.length < 3) return null;
+  const intervalMean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+  const intervalVar = intervals.reduce((a, b) => a + (b - intervalMean) * (b - intervalMean), 0) / intervals.length;
+  const intervalStd = Math.sqrt(intervalVar);
+  const targetInterval = 60 / bpm;
+  const jitterRatio = intervalStd / intervalMean;
+  const offsetRatio = Math.abs(intervalMean - targetInterval) / targetInterval;
   const penalty = Math.min(1, jitterRatio * 2 + offsetRatio * 1.5);
   const score = Math.max(0, 1 - penalty) * 100;
   return score;
