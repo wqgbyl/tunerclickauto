@@ -756,7 +756,7 @@ function analyzeAudioBuffer(buffer, { bpm }) {
     beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
   });
   const harmonyLog = buildHarmonyLog(pitchLogLocal, { windowSec: 0.7, stepSec: 0.25 });
-  const harmonySummary = summarizeHarmony(harmonyLog, 3);
+  const harmonySummary = summarizeHarmony(harmonyLog, buffer.duration, 3);
   return { pitchLog: pitchLogLocal, harmonyLog, harmonySummary, tempoStability, detectedTempo, beatTimeline };
 }
 
@@ -945,16 +945,32 @@ function buildHarmonyLog(pitchLogLocal, { windowSec = 0.6, stepSec = 0.2 } = {})
   return result;
 }
 
-function summarizeHarmony(harmonyLog, topN = 3) {
+function summarizeHarmony(harmonyLog, totalDurationSec, topN = 3) {
   if (!harmonyLog?.length) return "—";
-  const counts = new Map();
-  for (const entry of harmonyLog) {
-    counts.set(entry.chordName, (counts.get(entry.chordName) || 0) + 1);
+  const durations = new Map();
+  for (let i = 0; i < harmonyLog.length; i++) {
+    const entry = harmonyLog[i];
+    const nextTime = harmonyLog[i + 1]?.tSec;
+    const endTime = Number.isFinite(nextTime) ? nextTime : totalDurationSec;
+    const span = Math.max(0, (endTime ?? entry.tSec) - entry.tSec);
+    durations.set(entry.chordName, (durations.get(entry.chordName) || 0) + span);
   }
-  const top = [...counts.entries()]
+  if (durations.size === 0) {
+    const counts = new Map();
+    for (const entry of harmonyLog) {
+      counts.set(entry.chordName, (counts.get(entry.chordName) || 0) + 1);
+    }
+    const top = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, topN)
+      .map(([name, count]) => `${name}(${count})`)
+      .join(", ");
+    return top || "—";
+  }
+  const top = [...durations.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, topN)
-    .map(([name, count]) => `${name}(${count})`)
+    .map(([name, duration]) => `${name}(${duration.toFixed(1)}s)`)
     .join(", ");
   return top || "—";
 }
