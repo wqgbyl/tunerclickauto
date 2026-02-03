@@ -25,6 +25,11 @@ const metGainPlayVal = $("metGainPlayVal");
 const btnExportVideo = $("btnExportVideo");
 const exportStatus = $("exportStatus");
 const exportLink = $("exportLink");
+const exportProgressRow = $("exportProgressRow");
+const exportProgress = $("exportProgress");
+const exportPercent = $("exportPercent");
+const exportActions = $("exportActions");
+const btnExportPlayAudio = $("btnExportPlayAudio");
 
 const uploadAudio = $("uploadAudio");
 const btnUploadAnalyze = $("btnUploadAnalyze");
@@ -97,6 +102,7 @@ let playback = {
   bpm: 0,
   tempoTimers: [],
 };
+let exportProgressTimer = null;
 
 btnStart.addEventListener("click", startRecording);
 btnStop.addEventListener("click", stopRecording);
@@ -104,6 +110,7 @@ btnPlay.addEventListener("click", play);
 btnStopPlay.addEventListener("click", stopPlayback);
 btnUploadAnalyze.addEventListener("click", analyzeUploadedAudio);
 btnExportVideo.addEventListener("click", exportVideo);
+btnExportPlayAudio.addEventListener("click", playAudioOnly);
 uploadAudio.addEventListener("change", () => {
   uploadStatus.textContent = uploadAudio.files?.[0]?.name || "未选择文件";
 });
@@ -365,6 +372,28 @@ function stopPlayback() {
   tempoLiveEl.textContent = "—";
 }
 
+async function playAudioOnly() {
+  if (!decodedAudioBuffer) return;
+  btnPlay.disabled = true;
+  btnStopPlay.disabled = false;
+
+  const ctx = await ensureAudioContext();
+  await ctx.resume();
+  stopPlayback();
+
+  const src = ctx.createBufferSource();
+  src.buffer = decodedAudioBuffer;
+  const musicGain = ctx.createGain();
+  musicGain.gain.value = 1.0;
+  src.connect(musicGain);
+  musicGain.connect(ctx.destination);
+  src.start();
+
+  playback.source = src;
+  src.onended = () => stopPlayback();
+  setStatus("回放中（原始音频）");
+}
+
 function renderReport(report) {
   if (!report || !report.pitchLog || report.pitchLog.length === 0) {
     repMeanAbs.textContent = "—";
@@ -406,6 +435,11 @@ function resetUIForNewTake() {
   exportStatus.textContent = "未生成";
   exportLink.classList.remove("show");
   exportLink.removeAttribute("href");
+  exportProgressRow.classList.remove("show");
+  exportActions.classList.remove("show");
+  exportProgress.value = 0;
+  exportPercent.textContent = "0%";
+  btnExportPlayAudio.disabled = true;
 
   repMeanAbs.textContent = "—";
   repIn10.textContent = "—";
@@ -455,9 +489,18 @@ async function analyzeUploadedAudio() {
 async function exportVideo() {
   if (!decodedAudioBuffer) return;
   btnExportVideo.disabled = true;
+  btnExportPlayAudio.disabled = true;
   exportStatus.textContent = "导出中…";
   exportLink.classList.remove("show");
   exportLink.removeAttribute("href");
+  exportActions.classList.remove("show");
+  exportProgressRow.classList.add("show");
+  exportProgress.value = 0;
+  exportPercent.textContent = "0%";
+  if (exportProgressTimer) {
+    clearInterval(exportProgressTimer);
+    exportProgressTimer = null;
+  }
 
   const ctx = await ensureAudioContext();
   await ctx.resume();
@@ -470,6 +513,11 @@ async function exportVideo() {
   if (!c2d) {
     exportStatus.textContent = "导出失败：无法创建画布";
     btnExportVideo.disabled = false;
+    exportProgressRow.classList.remove("show");
+    if (exportProgressTimer) {
+      clearInterval(exportProgressTimer);
+      exportProgressTimer = null;
+    }
     return;
   }
 
@@ -484,9 +532,7 @@ async function exportVideo() {
   const clickGain = ctx.createGain();
   clickGain.gain.value = Number(metGainPlay.value);
 
-  musicGain.connect(ctx.destination);
   musicGain.connect(dest);
-  clickGain.connect(ctx.destination);
   clickGain.connect(dest);
 
   src.connect(musicGain);
@@ -542,7 +588,16 @@ async function exportVideo() {
     exportLink.href = url;
     exportLink.classList.add("show");
     exportStatus.textContent = "导出完成";
+    exportProgress.value = 100;
+    exportPercent.textContent = "100%";
+    exportProgressRow.classList.remove("show");
+    exportActions.classList.add("show");
     btnExportVideo.disabled = false;
+    btnExportPlayAudio.disabled = false;
+    if (exportProgressTimer) {
+      clearInterval(exportProgressTimer);
+      exportProgressTimer = null;
+    }
   };
 
   const durationSec = decodedAudioBuffer.duration;
@@ -601,9 +656,20 @@ async function exportVideo() {
   src.start(t0);
   requestAnimationFrame(drawFrame);
 
+  const durationMs = Math.max(1, Math.ceil(durationSec * 1000));
+  exportProgressTimer = setInterval(() => {
+    const now = ctx.currentTime;
+    const elapsed = Math.max(0, now - t0);
+    const ratio = Math.min(1, elapsed / durationSec);
+    const percent = Math.round(ratio * 100);
+    exportProgress.value = percent;
+    exportPercent.textContent = `${percent}%`;
+    exportStatus.textContent = `导出中…${percent}%`;
+  }, 120);
+
   setTimeout(() => {
     try { recorder.stop(); } catch {}
-  }, Math.ceil((durationSec + 0.5) * 1000));
+  }, durationMs + 500);
 }
 
 function analyzeAudioBuffer(buffer, { bpm }) {

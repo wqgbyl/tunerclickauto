@@ -89,7 +89,14 @@
       <div class="row">
         <button id="btnExportVideo" disabled>导出同步视频</button>
         <span id="exportStatus" class="status">未生成</span>
+      </div>
+      <div id="exportProgressRow" class="row export-progress">
+        <progress id="exportProgress" max="100" value="0"></progress>
+        <span id="exportPercent" class="status">0%</span>
+      </div>
+      <div id="exportActions" class="row export-actions">
         <a id="exportLink" class="download" download="metronome-sync.webm">下载视频</a>
+        <button id="btnExportPlayAudio" class="secondary" disabled>直接回放音频</button>
       </div>
       <p class="small">导出视频会叠加节拍器声音，并按音乐律动实时标记速度。</p>
     </section>
