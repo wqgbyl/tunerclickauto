@@ -37,6 +37,13 @@ button{
 }
 button[disabled]{opacity:.4;cursor:not-allowed}
 .status{color:var(--muted)}
+.download{
+  display:none;
+  color:var(--accent);
+  text-decoration:none;
+  font-weight:600;
+}
+.download.show{display:inline}
 .grid{
   display:grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr));
@@ -51,6 +58,8 @@ button[disabled]{opacity:.4;cursor:not-allowed}
 .value{font-size:18px;font-weight:700}
 .hint{color:var(--muted);font-size:13px;line-height:1.55}
 .small{color:var(--muted);font-size:12px}
+.tempo-live{align-items:baseline}
+.tempo-live .value{font-size:20px}
 .slider{display:flex;gap:10px;align-items:center;color:var(--muted)}
 .slider input{flex:1}
 .checkbox{display:flex;gap:10px;align-items:center;color:var(--muted)}

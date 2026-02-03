@@ -15,12 +15,16 @@ const freqHzEl = $("freqHz");
 const centsEl = $("cents");
 const tempoEl = $("tempo");
 const durEl = $("dur");
+const tempoLiveEl = $("tempoLive");
 
 const btnPlay = $("btnPlay");
 const btnStopPlay = $("btnStopPlay");
 const metOn = $("metOn");
 const metGainPlay = $("metGainPlay");
 const metGainPlayVal = $("metGainPlayVal");
+const btnExportVideo = $("btnExportVideo");
+const exportStatus = $("exportStatus");
+const exportLink = $("exportLink");
 
 const uploadAudio = $("uploadAudio");
 const btnUploadAnalyze = $("btnUploadAnalyze");
@@ -41,6 +45,7 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let decodedAudioBuffer = null;
 let detectedTempo = null;
+let beatTimeline = null;
 
 let workletNode = null;
 
@@ -90,6 +95,7 @@ let playback = {
   gainNode: null,
   metStart: 0,
   bpm: 0,
+  tempoTimers: [],
 };
 
 btnStart.addEventListener("click", startRecording);
@@ -97,6 +103,7 @@ btnStop.addEventListener("click", stopRecording);
 btnPlay.addEventListener("click", play);
 btnStopPlay.addEventListener("click", stopPlayback);
 btnUploadAnalyze.addEventListener("click", analyzeUploadedAudio);
+btnExportVideo.addEventListener("click", exportVideo);
 uploadAudio.addEventListener("change", () => {
   uploadStatus.textContent = uploadAudio.files?.[0]?.name || "未选择文件";
 });
@@ -220,10 +227,12 @@ async function stopRecording() {
 
   const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
   updateDetectedTempo(report.detectedTempo);
+  beatTimeline = report.beatTimeline;
   renderReport(report);
 
   btnStart.disabled = false;
   btnPlay.disabled = false;
+  btnExportVideo.disabled = false;
   setStatus("已录制，准备回放");
 }
 
@@ -238,6 +247,38 @@ function stopMediaRecorderSafely() {
   });
 }
 
+function scheduleDynamicMetronome(ctx, timeline, { startTime, clickBufferStrong, clickBufferWeak, clickGainNode }) {
+  if (!timeline?.beatTimes?.length) return null;
+  const sources = [];
+  for (let i = 0; i < timeline.beatTimes.length; i++) {
+    const when = startTime + timeline.beatTimes[i];
+    const src = ctx.createBufferSource();
+    src.buffer = i % 4 === 0 ? clickBufferStrong : clickBufferWeak;
+    src.connect(clickGainNode);
+    src.start(when);
+    sources.push(src);
+  }
+  return () => {
+    for (const src of sources) {
+      try { src.stop(); } catch {}
+    }
+  };
+}
+
+function scheduleTempoUpdates(ctx, startTime, timeline, onTempo) {
+  const timers = [];
+  if (!timeline?.beatTimes?.length) return timers;
+  for (let i = 1; i < timeline.beatTimes.length; i++) {
+    const bpm = timeline.bpms?.[i] ?? timeline.bpms?.[i - 1];
+    if (!bpm) continue;
+    const when = startTime + timeline.beatTimes[i];
+    const delayMs = Math.max(0, (when - ctx.currentTime) * 1000);
+    const id = setTimeout(() => onTempo(bpm), delayMs);
+    timers.push(id);
+  }
+  return timers;
+}
+
 async function play() {
   if (!decodedAudioBuffer) return;
 
@@ -250,6 +291,7 @@ async function play() {
 
   const bpm = getBpmPreset();
   const useMet = metOn.checked;
+  const useDynamicBeats = !!(beatTimeline?.beatTimes?.length && beatTimeline.beatTimes.length >= 3);
 
   const src = ctx.createBufferSource();
   src.buffer = decodedAudioBuffer;
@@ -267,24 +309,37 @@ async function play() {
 
   const startDelay = 0.03;
   const t0 = ctx.currentTime + startDelay;
-  const tempoConfidenceThreshold = 0.5;
-  const metOffset = (useMet && detectedTempo?.beatOffsetSec != null && detectedTempo.confidence >= tempoConfidenceThreshold)
-    ? Math.max(0, detectedTempo.beatOffsetSec)
-    : 0;
-  const metStartTime = t0 + metOffset;
-  const metDurationSec = Math.max(0, decodedAudioBuffer.duration - metOffset);
 
   let stopScheduler = null;
   if (useMet) {
-    stopScheduler = scheduleMetronome(ctx, {
-      bpm,
-      meter: 999999,
-      startTime: metStartTime,
-      durationSec: metDurationSec,
-      clickBufferStrong: clickStrong,
-      clickBufferWeak: clickStrong,
-      clickGainNode: clickGain,
+    if (useDynamicBeats) {
+      stopScheduler = scheduleDynamicMetronome(ctx, beatTimeline, {
+        startTime: t0,
+        clickBufferStrong: clickStrong,
+        clickBufferWeak: clickWeak,
+        clickGainNode: clickGain,
+      });
+    } else {
+      stopScheduler = scheduleMetronome(ctx, {
+        bpm,
+        meter: 999999,
+        startTime: t0,
+        durationSec: decodedAudioBuffer.duration,
+        clickBufferStrong: clickStrong,
+        clickBufferWeak: clickStrong,
+        clickGainNode: clickGain,
+      });
+    }
+  }
+
+  if (useDynamicBeats) {
+    const initialBpm = beatTimeline.bpms?.[1] ?? beatTimeline.bpms?.[0] ?? bpm;
+    tempoLiveEl.textContent = `♩=${initialBpm.toFixed(0)}`;
+    playback.tempoTimers = scheduleTempoUpdates(ctx, t0, beatTimeline, (tempo) => {
+      tempoLiveEl.textContent = `♩=${tempo.toFixed(0)}`;
     });
+  } else {
+    tempoLiveEl.textContent = `♩=${bpm}`;
   }
 
   src.connect(musicGain);
@@ -300,9 +355,14 @@ async function play() {
 function stopPlayback() {
   if (playback.source) { try { playback.source.stop(); } catch {} playback.source = null; }
   if (playback.stopScheduler) { playback.stopScheduler(); playback.stopScheduler = null; }
+  if (playback.tempoTimers.length) {
+    playback.tempoTimers.forEach((id) => clearTimeout(id));
+    playback.tempoTimers = [];
+  }
   btnPlay.disabled = !decodedAudioBuffer;
   btnStopPlay.disabled = true;
   if (decodedAudioBuffer) setStatus("已录制，准备回放");
+  tempoLiveEl.textContent = "—";
 }
 
 function renderReport(report) {
@@ -336,10 +396,16 @@ function renderReport(report) {
 
 function resetUIForNewTake() {
   detectedTempo = null;
+  beatTimeline = null;
   noteNameEl.textContent = "—";
   freqHzEl.textContent = "—";
   centsEl.textContent = "—";
   durEl.textContent = "—";
+  tempoLiveEl.textContent = "—";
+  btnExportVideo.disabled = true;
+  exportStatus.textContent = "未生成";
+  exportLink.classList.remove("show");
+  exportLink.removeAttribute("href");
 
   repMeanAbs.textContent = "—";
   repIn10.textContent = "—";
@@ -373,15 +439,171 @@ async function analyzeUploadedAudio() {
 
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
     updateDetectedTempo(report.detectedTempo);
+    beatTimeline = report.beatTimeline;
     renderReport(report);
 
     btnPlay.disabled = false;
+    btnExportVideo.disabled = false;
     uploadStatus.textContent = "分析完成";
     setStatus("已上传音频，准备回放");
   } catch (err) {
     console.error(err);
     uploadStatus.textContent = "解析失败，请尝试其他音频格式";
   }
+}
+
+async function exportVideo() {
+  if (!decodedAudioBuffer) return;
+  btnExportVideo.disabled = true;
+  exportStatus.textContent = "导出中…";
+  exportLink.classList.remove("show");
+  exportLink.removeAttribute("href");
+
+  const ctx = await ensureAudioContext();
+  await ctx.resume();
+  stopPlayback();
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280;
+  canvas.height = 720;
+  const c2d = canvas.getContext("2d");
+  if (!c2d) {
+    exportStatus.textContent = "导出失败：无法创建画布";
+    btnExportVideo.disabled = false;
+    return;
+  }
+
+  const stream = canvas.captureStream(30);
+  const dest = ctx.createMediaStreamDestination();
+
+  const src = ctx.createBufferSource();
+  src.buffer = decodedAudioBuffer;
+
+  const musicGain = ctx.createGain();
+  musicGain.gain.value = 1.0;
+  const clickGain = ctx.createGain();
+  clickGain.gain.value = Number(metGainPlay.value);
+
+  musicGain.connect(ctx.destination);
+  musicGain.connect(dest);
+  clickGain.connect(ctx.destination);
+  clickGain.connect(dest);
+
+  src.connect(musicGain);
+
+  const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
+  const clickWeak = createClickBuffer(ctx, { freq: 1400, durationMs: 12 });
+
+  const startDelay = 0.1;
+  const t0 = ctx.currentTime + startDelay;
+  const useDynamicBeats = !!(beatTimeline?.beatTimes?.length && beatTimeline.beatTimes.length >= 3);
+
+  let stopScheduler = null;
+  if (useDynamicBeats) {
+    stopScheduler = scheduleDynamicMetronome(ctx, beatTimeline, {
+      startTime: t0,
+      clickBufferStrong: clickStrong,
+      clickBufferWeak: clickWeak,
+      clickGainNode: clickGain,
+    });
+  } else {
+    stopScheduler = scheduleMetronome(ctx, {
+      bpm: getBpmPreset(),
+      meter: 999999,
+      startTime: t0,
+      durationSec: decodedAudioBuffer.duration,
+      clickBufferStrong: clickStrong,
+      clickBufferWeak: clickStrong,
+      clickGainNode: clickGain,
+    });
+  }
+
+  const combinedStream = new MediaStream([
+    ...stream.getVideoTracks(),
+    ...dest.stream.getAudioTracks(),
+  ]);
+
+  let recorder;
+  const preferredMime = "video/webm;codecs=vp9,opus";
+  if (MediaRecorder.isTypeSupported(preferredMime)) {
+    recorder = new MediaRecorder(combinedStream, { mimeType: preferredMime });
+  } else {
+    recorder = new MediaRecorder(combinedStream);
+  }
+
+  const chunks = [];
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+  recorder.onstop = () => {
+    if (stopScheduler) stopScheduler();
+    const blob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+    const url = URL.createObjectURL(blob);
+    exportLink.href = url;
+    exportLink.classList.add("show");
+    exportStatus.textContent = "导出完成";
+    btnExportVideo.disabled = false;
+  };
+
+  const durationSec = decodedAudioBuffer.duration;
+  const beatTimes = useDynamicBeats
+    ? beatTimeline.beatTimes
+    : buildConstantBeatTimes(getBpmPreset(), durationSec);
+  const beatBpms = useDynamicBeats ? beatTimeline.bpms : null;
+  let beatIndex = 0;
+  let lastBeatTime = 0;
+  let currentBpm = useDynamicBeats
+    ? (beatBpms?.[1] ?? beatBpms?.[0] ?? getBpmPreset())
+    : getBpmPreset();
+
+  const drawFrame = () => {
+    const now = ctx.currentTime;
+    const elapsed = now - t0;
+    c2d.clearRect(0, 0, canvas.width, canvas.height);
+    c2d.fillStyle = "#0b0f14";
+    c2d.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (elapsed >= 0) {
+      while (beatIndex < beatTimes.length && beatTimes[beatIndex] <= elapsed) {
+        lastBeatTime = beatTimes[beatIndex];
+        if (useDynamicBeats && beatBpms?.[beatIndex]) {
+          currentBpm = beatBpms[beatIndex];
+        }
+        beatIndex++;
+      }
+    }
+
+    const flash = Math.max(0, 1 - (elapsed - lastBeatTime) / 0.2);
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const radius = 90 + flash * 30;
+
+    c2d.beginPath();
+    c2d.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    c2d.fillStyle = `rgba(46, 160, 67, ${0.2 + flash * 0.6})`;
+    c2d.fill();
+
+    c2d.font = "700 64px system-ui, sans-serif";
+    c2d.fillStyle = "#e6edf3";
+    c2d.textAlign = "center";
+    c2d.fillText(`♩=${currentBpm.toFixed(0)}`, centerX, centerY + 12);
+
+    c2d.font = "400 26px system-ui, sans-serif";
+    c2d.fillStyle = "#8b949e";
+    c2d.fillText("同步节拍器导出", centerX, centerY + 72);
+
+    if (elapsed < durationSec + 0.5) {
+      requestAnimationFrame(drawFrame);
+    }
+  };
+
+  recorder.start();
+  src.start(t0);
+  requestAnimationFrame(drawFrame);
+
+  setTimeout(() => {
+    try { recorder.stop(); } catch {}
+  }, Math.ceil((durationSec + 0.5) * 1000));
 }
 
 function analyzeAudioBuffer(buffer, { bpm }) {
@@ -413,7 +635,8 @@ function analyzeAudioBuffer(buffer, { bpm }) {
 
   const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
   const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
-  return { pitchLog: pitchLogLocal, tempoStability, detectedTempo };
+  const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize);
+  return { pitchLog: pitchLogLocal, tempoStability, detectedTempo, beatTimeline };
 }
 
 function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
@@ -462,4 +685,67 @@ function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
   const penalty = Math.min(1, jitterRatio * 2 + offsetRatio * 1.5);
   const score = Math.max(0, 1 - penalty) * 100;
   return score;
+}
+
+function computeBeatTimeline(data, sampleRate, hopSizeLocal) {
+  const hopSec = hopSizeLocal / sampleRate;
+  const frame = new Float32Array(hopSizeLocal);
+  const rms = [];
+  for (let i = 0; i + hopSizeLocal <= data.length; i += hopSizeLocal) {
+    frame.set(data.subarray(i, i + hopSizeLocal));
+    let sum = 0;
+    for (let j = 0; j < frame.length; j++) {
+      const v = frame[j];
+      sum += v * v;
+    }
+    rms.push(Math.sqrt(sum / frame.length));
+  }
+  if (rms.length < 8) return null;
+
+  const sm = new Float32Array(rms.length);
+  for (let i = 0; i < rms.length; i++) {
+    let acc = 0;
+    let cnt = 0;
+    for (let k = -2; k <= 2; k++) {
+      const j = i + k;
+      if (j >= 0 && j < rms.length) { acc += rms[j]; cnt++; }
+    }
+    sm[i] = acc / cnt;
+  }
+
+  const mean = sm.reduce((a, b) => a + b, 0) / sm.length;
+  const variance = sm.reduce((a, b) => a + (b - mean) * (b - mean), 0) / sm.length;
+  const std = Math.sqrt(variance);
+  const threshold = mean + std * 0.35;
+
+  const minIntervalFrames = Math.max(1, Math.round(0.2 / hopSec));
+  const peaks = [];
+  for (let i = 1; i < sm.length - 1; i++) {
+    if (sm[i] > threshold && sm[i] > sm[i - 1] && sm[i] > sm[i + 1]) {
+      if (!peaks.length || i - peaks[peaks.length - 1] >= minIntervalFrames) {
+        peaks.push(i);
+      }
+    }
+  }
+
+  if (peaks.length < 2) return null;
+  const beatTimes = peaks.map((idx) => idx * hopSec);
+  const bpms = beatTimes.map((t, i) => {
+    if (i === 0) return null;
+    const interval = t - beatTimes[i - 1];
+    if (interval <= 0) return null;
+    const bpm = 60 / interval;
+    return Math.max(30, Math.min(240, bpm));
+  });
+  return { beatTimes, bpms };
+}
+
+function buildConstantBeatTimes(bpm, durationSec) {
+  if (!isFinite(bpm) || bpm <= 0) return [];
+  const interval = 60 / bpm;
+  const beats = [];
+  for (let t = 0; t <= durationSec + 0.001; t += interval) {
+    beats.push(t);
+  }
+  return beats;
 }
