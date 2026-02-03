@@ -41,6 +41,7 @@ const repIn25 = $("repIn25");
 const repTempoStability = $("repTempoStability");
 const repN = $("repN");
 const repTop = $("repTop");
+const repHarmony = $("repHarmony");
 
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
 
@@ -52,6 +53,7 @@ let decodedAudioBuffer = null;
 let detectedTempo = null;
 let beatTimeline = null;
 let analyzedPitchLog = [];
+let analyzedHarmonyLog = [];
 
 let workletNode = null;
 
@@ -236,6 +238,8 @@ async function stopRecording() {
   const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
   updateDetectedTempo(report.detectedTempo);
   beatTimeline = report.beatTimeline;
+  analyzedPitchLog = report.pitchLog || [];
+  analyzedHarmonyLog = report.harmonyLog || [];
   renderReport(report);
 
   btnStart.disabled = false;
@@ -403,9 +407,10 @@ function renderReport(report) {
     repTempoStability.textContent = "—";
     repN.textContent = "0";
     repTop.textContent = "—";
+    repHarmony.textContent = "—";
     return;
   }
-  const { pitchLog, tempoStability } = report;
+  const { pitchLog, tempoStability, harmonySummary } = report;
   const centsAbs = pitchLog.map(x => Math.abs(x.cents));
   const meanAbs = centsAbs.reduce((a,b)=>a+b,0) / centsAbs.length;
   const in10 = centsAbs.filter(x => x <= 10).length / centsAbs.length;
@@ -422,12 +427,14 @@ function renderReport(report) {
   const top = [...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([k,v])=>`${k}(${v})`).join(", ");
   repTop.textContent = top || "—";
+  repHarmony.textContent = harmonySummary || "—";
 }
 
 function resetUIForNewTake() {
   detectedTempo = null;
   beatTimeline = null;
   analyzedPitchLog = [];
+  analyzedHarmonyLog = [];
   noteNameEl.textContent = "—";
   freqHzEl.textContent = "—";
   centsEl.textContent = "—";
@@ -449,6 +456,7 @@ function resetUIForNewTake() {
   repTempoStability.textContent = "—";
   repN.textContent = "—";
   repTop.textContent = "—";
+  repHarmony.textContent = "—";
 }
 
 function setStatus(s) { statusEl.textContent = s; }
@@ -477,6 +485,7 @@ async function analyzeUploadedAudio() {
     updateDetectedTempo(report.detectedTempo);
     beatTimeline = report.beatTimeline;
     analyzedPitchLog = report.pitchLog || [];
+    analyzedHarmonyLog = report.harmonyLog || [];
     renderReport(report);
 
     btnPlay.disabled = false;
@@ -616,6 +625,9 @@ async function exportVideo() {
   const pitchData = Array.isArray(analyzedPitchLog) ? analyzedPitchLog : [];
   let pitchIndex = 0;
   let currentPitch = null;
+  const harmonyData = Array.isArray(analyzedHarmonyLog) ? analyzedHarmonyLog : [];
+  let harmonyIndex = 0;
+  let currentHarmony = null;
 
   const drawFrame = () => {
     const now = ctx.currentTime;
@@ -635,6 +647,10 @@ async function exportVideo() {
       while (pitchIndex < pitchData.length && pitchData[pitchIndex].tSec <= elapsed) {
         currentPitch = pitchData[pitchIndex];
         pitchIndex++;
+      }
+      while (harmonyIndex < harmonyData.length && harmonyData[harmonyIndex].tSec <= elapsed) {
+        currentHarmony = harmonyData[harmonyIndex];
+        harmonyIndex++;
       }
     }
 
@@ -671,6 +687,11 @@ async function exportVideo() {
       ? `${currentPitch.cents} cents`
       : "—";
     c2d.fillText(`${freqLabel} · ${centsLabel}`, centerX, centerY + 178);
+
+    c2d.font = "500 26px system-ui, sans-serif";
+    c2d.fillStyle = "#c9d1d9";
+    const harmonyLabel = currentHarmony?.chordName ? currentHarmony.chordName : "—";
+    c2d.fillText(`和声：${harmonyLabel}`, centerX, centerY + 220);
 
     if (elapsed < durationSec + 0.5) {
       requestAnimationFrame(drawFrame);
@@ -730,7 +751,9 @@ function analyzeAudioBuffer(buffer, { bpm }) {
     baseBpm: detectedTempo?.bpm ?? bpm,
     beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
   });
-  return { pitchLog: pitchLogLocal, tempoStability, detectedTempo, beatTimeline };
+  const harmonyLog = buildHarmonyLog(pitchLogLocal, { windowSec: 0.7, stepSec: 0.25 });
+  const harmonySummary = summarizeHarmony(harmonyLog, 3);
+  return { pitchLog: pitchLogLocal, harmonyLog, harmonySummary, tempoStability, detectedTempo, beatTimeline };
 }
 
 function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
@@ -885,4 +908,94 @@ function buildConstantBeatTimes(bpm, durationSec) {
     beats.push(t);
   }
   return beats;
+}
+
+function buildHarmonyLog(pitchLogLocal, { windowSec = 0.6, stepSec = 0.2 } = {}) {
+  if (!pitchLogLocal?.length) return [];
+  const result = [];
+  const halfWindow = windowSec / 2;
+  const lastTime = pitchLogLocal[pitchLogLocal.length - 1].tSec;
+  let startIndex = 0;
+  let endIndex = 0;
+  let lastChord = null;
+  for (let t = 0; t <= lastTime + 0.001; t += stepSec) {
+    const windowStart = t - halfWindow;
+    const windowEnd = t + halfWindow;
+    while (startIndex < pitchLogLocal.length && pitchLogLocal[startIndex].tSec < windowStart) {
+      startIndex++;
+    }
+    while (endIndex < pitchLogLocal.length && pitchLogLocal[endIndex].tSec <= windowEnd) {
+      endIndex++;
+    }
+    const pitchClasses = [];
+    for (let i = startIndex; i < endIndex; i++) {
+      const pc = noteNameToPitchClass(pitchLogLocal[i].noteName);
+      if (pc !== null) pitchClasses.push(pc);
+    }
+    const chordName = detectChordFromPitchClasses(pitchClasses);
+    if (chordName && chordName !== lastChord) {
+      result.push({ tSec: t, chordName });
+      lastChord = chordName;
+    }
+  }
+  return result;
+}
+
+function summarizeHarmony(harmonyLog, topN = 3) {
+  if (!harmonyLog?.length) return "—";
+  const counts = new Map();
+  for (const entry of harmonyLog) {
+    counts.set(entry.chordName, (counts.get(entry.chordName) || 0) + 1);
+  }
+  const top = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([name, count]) => `${name}(${count})`)
+    .join(", ");
+  return top || "—";
+}
+
+function noteNameToPitchClass(noteName) {
+  if (!noteName) return null;
+  const match = noteName.match(/^([A-G]#?)/);
+  if (!match) return null;
+  const name = match[1];
+  const idx = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].indexOf(name);
+  return idx >= 0 ? idx : null;
+}
+
+function detectChordFromPitchClasses(pitchClasses) {
+  if (!pitchClasses?.length) return null;
+  const counts = new Array(12).fill(0);
+  for (const pc of pitchClasses) counts[pc]++;
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total < 2) return null;
+  const chordTypes = [
+    { name: "", intervals: [0, 4, 7] },
+    { name: "m", intervals: [0, 3, 7] },
+    { name: "sus2", intervals: [0, 2, 7] },
+    { name: "sus4", intervals: [0, 5, 7] },
+    { name: "dim", intervals: [0, 3, 6] },
+    { name: "aug", intervals: [0, 4, 8] },
+  ];
+  let best = { score: 0, name: null };
+  for (let root = 0; root < 12; root++) {
+    for (const chord of chordTypes) {
+      let score = 0;
+      for (const interval of chord.intervals) {
+        score += counts[(root + interval) % 12];
+      }
+      if (counts[root] > 0) score += 0.5;
+      if (score > best.score) {
+        best = { score, name: `${pitchClassName(root)}${chord.name}` };
+      }
+    }
+  }
+  if (best.score / total < 0.5 || best.score < 2) return null;
+  return best.name;
+}
+
+function pitchClassName(idx) {
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  return names[idx] || "C";
 }
