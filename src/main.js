@@ -635,7 +635,10 @@ function analyzeAudioBuffer(buffer, { bpm }) {
 
   const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
   const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
-  const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize);
+  const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize, {
+    baseBpm: detectedTempo?.bpm ?? bpm,
+    beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
+  });
   return { pitchLog: pitchLogLocal, tempoStability, detectedTempo, beatTimeline };
 }
 
@@ -687,7 +690,7 @@ function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
   return score;
 }
 
-function computeBeatTimeline(data, sampleRate, hopSizeLocal) {
+function computeBeatTimeline(data, sampleRate, hopSizeLocal, { baseBpm, beatOffsetSec } = {}) {
   const hopSec = hopSizeLocal / sampleRate;
   const frame = new Float32Array(hopSizeLocal);
   const rms = [];
@@ -729,13 +732,56 @@ function computeBeatTimeline(data, sampleRate, hopSizeLocal) {
   }
 
   if (peaks.length < 2) return null;
-  const beatTimes = peaks.map((idx) => idx * hopSec);
+  const onsetTimes = peaks.map((idx) => idx * hopSec);
+
+  if (!isFinite(baseBpm) || baseBpm <= 0) {
+    const beatTimes = onsetTimes;
+    const bpms = beatTimes.map((t, i) => {
+      if (i === 0) return null;
+      const interval = t - beatTimes[i - 1];
+      if (interval <= 0) return null;
+      const bpm = 60 / interval;
+      return Math.max(30, Math.min(240, bpm));
+    });
+    return { beatTimes, bpms };
+  }
+
+  const interval = 60 / baseBpm;
+  const durationSec = data.length / sampleRate;
+  const start = ((beatOffsetSec ?? 0) % interval + interval) % interval;
+  const beatTimes = [];
+  const followWindowSec = Math.min(0.06, interval * 0.25);
+  const followStrength = 0.25;
+  const maxNudgeSec = Math.min(0.02, interval * 0.1);
+
+  let onsetIndex = 0;
+  for (let t = start; t <= durationSec + 0.001; t += interval) {
+    while (onsetIndex < onsetTimes.length && onsetTimes[onsetIndex] < t - followWindowSec) {
+      onsetIndex++;
+    }
+    let adjusted = t;
+    if (onsetIndex < onsetTimes.length) {
+      const candidate = onsetTimes[onsetIndex];
+      if (Math.abs(candidate - t) <= followWindowSec) {
+        const delta = candidate - t;
+        const nudged = t + delta * followStrength;
+        adjusted = t + Math.max(-maxNudgeSec, Math.min(maxNudgeSec, nudged - t));
+      }
+    }
+    if (beatTimes.length > 0) {
+      adjusted = Math.max(adjusted, beatTimes[beatTimes.length - 1] + interval * 0.5);
+    }
+    beatTimes.push(adjusted);
+  }
+
+  const bpmMin = baseBpm * 0.96;
+  const bpmMax = baseBpm * 1.04;
   const bpms = beatTimes.map((t, i) => {
     if (i === 0) return null;
-    const interval = t - beatTimes[i - 1];
-    if (interval <= 0) return null;
-    const bpm = 60 / interval;
-    return Math.max(30, Math.min(240, bpm));
+    const intervalSec = t - beatTimes[i - 1];
+    if (intervalSec <= 0) return null;
+    const bpm = 60 / intervalSec;
+    return Math.max(bpmMin, Math.min(bpmMax, bpm));
   });
   return { beatTimes, bpms };
 }
