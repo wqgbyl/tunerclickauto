@@ -41,12 +41,10 @@ const uploadAudio = $("uploadAudio");
 const btnUploadAnalyze = $("btnUploadAnalyze");
 const uploadStatus = $("uploadStatus");
 
-const repMeanAbs = $("repMeanAbs");
-const repIn10 = $("repIn10");
-const repIn25 = $("repIn25");
+const repOverallScore = $("repOverallScore");
+const repLongNoteScore = $("repLongNoteScore");
 const repTempoStability = $("repTempoStability");
-const repN = $("repN");
-const repTop = $("repTop");
+const repTopNotes = $("repTopNotes");
 
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
 metSoloGain.addEventListener("input", () => {
@@ -428,31 +426,87 @@ async function playAudioOnly() {
 
 function renderReport(report) {
   if (!report || !report.pitchLog || report.pitchLog.length === 0) {
-    repMeanAbs.textContent = "—";
-    repIn10.textContent = "—";
-    repIn25.textContent = "—";
+    repOverallScore.textContent = "—";
+    repLongNoteScore.textContent = "—";
     repTempoStability.textContent = "—";
-    repN.textContent = "0";
-    repTop.textContent = "—";
+    repTopNotes.textContent = "—";
     return;
   }
   const { pitchLog, tempoStability } = report;
   const centsAbs = pitchLog.map(x => Math.abs(x.cents));
   const meanAbs = centsAbs.reduce((a,b)=>a+b,0) / centsAbs.length;
-  const in10 = centsAbs.filter(x => x <= 10).length / centsAbs.length;
-  const in25 = centsAbs.filter(x => x <= 25).length / centsAbs.length;
 
-  repMeanAbs.textContent = meanAbs.toFixed(1);
-  repIn10.textContent = (in10*100).toFixed(1) + "%";
-  repIn25.textContent = (in25*100).toFixed(1) + "%";
+  const scoreFromMeanAbs = (value) => {
+    const score = 100 - value * 1.5;
+    return Math.min(100, Math.max(0, score));
+  };
+
+  const estimateStep = () => {
+    if (pitchLog.length < 2) return 0.03;
+    const span = pitchLog[pitchLog.length - 1].tSec - pitchLog[0].tSec;
+    const avg = span / (pitchLog.length - 1);
+    return Math.min(0.2, Math.max(0.01, avg || 0.03));
+  };
+
+  const stepSec = estimateStep();
+  const segments = [];
+  let current = null;
+  for (const item of pitchLog) {
+    if (!current) {
+      current = {
+        noteName: item.noteName,
+        startSec: item.tSec,
+        lastSec: item.tSec,
+        centsAbsSum: Math.abs(item.cents),
+        count: 1,
+      };
+      continue;
+    }
+    const gap = item.tSec - current.lastSec;
+    if (item.noteName === current.noteName && gap <= stepSec * 2) {
+      current.lastSec = item.tSec;
+      current.centsAbsSum += Math.abs(item.cents);
+      current.count += 1;
+    } else {
+      segments.push(current);
+      current = {
+        noteName: item.noteName,
+        startSec: item.tSec,
+        lastSec: item.tSec,
+        centsAbsSum: Math.abs(item.cents),
+        count: 1,
+      };
+    }
+  }
+  if (current) segments.push(current);
+
+  const longSegments = segments
+    .map((seg) => {
+      const duration = (seg.lastSec - seg.startSec) + stepSec;
+      return {
+        duration,
+        meanAbs: seg.centsAbsSum / seg.count,
+      };
+    })
+    .filter(seg => seg.duration >= 0.3);
+
+  const longNoteScore = longSegments.length > 0
+    ? (() => {
+        const totalDuration = longSegments.reduce((acc, seg) => acc + seg.duration, 0);
+        const weightedAbs = longSegments.reduce((acc, seg) => acc + seg.meanAbs * seg.duration, 0) / totalDuration;
+        return scoreFromMeanAbs(weightedAbs);
+      })()
+    : null;
+
+  repOverallScore.textContent = `${scoreFromMeanAbs(meanAbs).toFixed(1)} / 100`;
+  repLongNoteScore.textContent = longNoteScore === null ? "—" : `${longNoteScore.toFixed(1)} / 100`;
   repTempoStability.textContent = tempoStability === null ? "—" : `${tempoStability.toFixed(1)} / 100`;
-  repN.textContent = String(pitchLog.length);
 
   const counts = new Map();
   for (const x of pitchLog) counts.set(x.noteName, (counts.get(x.noteName)||0)+1);
   const top = [...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([k,v])=>`${k}(${v})`).join(", ");
-  repTop.textContent = top || "—";
+  repTopNotes.textContent = top || "—";
 }
 
 function resetUIForNewTake() {
@@ -474,12 +528,10 @@ function resetUIForNewTake() {
   exportPercent.textContent = "0%";
   btnExportPlayAudio.disabled = true;
 
-  repMeanAbs.textContent = "—";
-  repIn10.textContent = "—";
-  repIn25.textContent = "—";
+  repOverallScore.textContent = "—";
+  repLongNoteScore.textContent = "—";
   repTempoStability.textContent = "—";
-  repN.textContent = "—";
-  repTop.textContent = "—";
+  repTopNotes.textContent = "—";
 }
 
 function setStatus(s) { statusEl.textContent = s; }
