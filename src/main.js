@@ -1,4 +1,5 @@
 import { PitchTracker } from "./dsp/pitchTracker.js";
+import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
 
 const $ = (id) => document.getElementById(id);
@@ -39,6 +40,7 @@ let micStream = null;
 let mediaRecorder = null;
 let recordedChunks = [];
 let decodedAudioBuffer = null;
+let detectedTempo = null;
 
 let workletNode = null;
 
@@ -217,6 +219,7 @@ async function stopRecording() {
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
   const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
+  detectedTempo = report.detectedTempo;
   renderReport(report);
 
   btnStart.disabled = false;
@@ -264,14 +267,20 @@ async function play() {
 
   const startDelay = 0.03;
   const t0 = ctx.currentTime + startDelay;
+  const tempoConfidenceThreshold = 0.5;
+  const metOffset = (useMet && detectedTempo?.beatOffsetSec != null && detectedTempo.confidence >= tempoConfidenceThreshold)
+    ? Math.max(0, detectedTempo.beatOffsetSec)
+    : 0;
+  const metStartTime = t0 + metOffset;
+  const metDurationSec = Math.max(0, decodedAudioBuffer.duration - metOffset);
 
   let stopScheduler = null;
   if (useMet) {
     stopScheduler = scheduleMetronome(ctx, {
       bpm,
       meter: 999999,
-      startTime: t0,
-      durationSec: decodedAudioBuffer.duration,
+      startTime: metStartTime,
+      durationSec: metDurationSec,
       clickBufferStrong: clickStrong,
       clickBufferWeak: clickStrong,
       clickGainNode: clickGain,
@@ -326,6 +335,7 @@ function renderReport(report) {
 }
 
 function resetUIForNewTake() {
+  detectedTempo = null;
   noteNameEl.textContent = "—";
   freqHzEl.textContent = "—";
   centsEl.textContent = "—";
@@ -349,6 +359,7 @@ async function analyzeUploadedAudio() {
   }
 
   try {
+    detectedTempo = null;
     uploadStatus.textContent = "解析中…";
     const ctx = await ensureAudioContext();
     await ctx.resume();
@@ -357,6 +368,7 @@ async function analyzeUploadedAudio() {
     durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
+    detectedTempo = report.detectedTempo;
     renderReport(report);
 
     btnPlay.disabled = false;
@@ -373,6 +385,7 @@ function analyzeAudioBuffer(buffer, { bpm }) {
   const data = buffer.getChannelData(0);
   const localHopSize = Math.max(240, Math.round(sampleRate * 0.01));
   const tracker = new PitchTracker({ sampleRate });
+  const tempoTracker = new TempoTracker({ sampleRate, frameSize, hopSize: localHopSize });
   const pitchLogLocal = [];
 
   let frame = new Float32Array(frameSize);
@@ -384,6 +397,7 @@ function analyzeAudioBuffer(buffer, { bpm }) {
       frame.copyWithin(0, localHopSize);
       frame.set(data.subarray(offset + frameSize - localHopSize, offset + frameSize), frameSize - localHopSize);
     }
+    tempoTracker.pushFrame(frame);
     const pitch = tracker.pushFrame(frame);
     if (pitch) {
       if (pitchLogLocal.length === 0 || (tSec - pitchLogLocal[pitchLogLocal.length - 1].tSec) > 0.03) {
@@ -394,7 +408,8 @@ function analyzeAudioBuffer(buffer, { bpm }) {
   }
 
   const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
-  return { pitchLog: pitchLogLocal, tempoStability };
+  const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
+  return { pitchLog: pitchLogLocal, tempoStability, detectedTempo };
 }
 
 function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
