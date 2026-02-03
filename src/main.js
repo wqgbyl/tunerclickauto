@@ -9,6 +9,8 @@ const btnStop = $("btnStop");
 const statusEl = $("status");
 
 const bpmInput = $("bpmInput");
+const bpmRange = $("bpmRange");
+const bpmRangeVal = $("bpmRangeVal");
 
 const noteNameEl = $("noteName");
 const freqHzEl = $("freqHz");
@@ -144,6 +146,26 @@ meterButtons.forEach((btn) => {
 });
 updateMeterButtons();
 
+const BPM_MIN = 40;
+const BPM_MAX = 280;
+const BPM_DEFAULT = 80;
+
+function clampBpm(value) {
+  if (!isFinite(value)) return BPM_DEFAULT;
+  return Math.max(BPM_MIN, Math.min(BPM_MAX, Math.round(value)));
+}
+
+function syncBpmInputs(value, source = "both") {
+  const bpm = clampBpm(value);
+  if (source !== "number") bpmInput.value = bpm;
+  if (source !== "range") bpmRange.value = bpm;
+  bpmRangeVal.textContent = bpm;
+}
+
+syncBpmInputs(bpmInput.value);
+bpmInput.addEventListener("input", () => syncBpmInputs(bpmInput.value, "number"));
+bpmRange.addEventListener("input", () => syncBpmInputs(bpmRange.value, "range"));
+
 async function ensureAudioContext() {
   if (audioCtx) return audioCtx;
   audioCtx = new AudioContext({ latencyHint: "interactive" });
@@ -153,8 +175,7 @@ async function ensureAudioContext() {
 
 function getBpmPreset() {
   const bpm = Number(bpmInput.value);
-  if (!isFinite(bpm)) return 90;
-  return Math.max(30, Math.min(240, Math.round(bpm)));
+  return clampBpm(bpm);
 }
 
 async function startRecording() {

@@ -18,7 +18,12 @@
       <div class="row">
         <label class="bpm">
           ♩ BPM
-          <input id="bpmInput" type="number" min="30" max="240" step="1" value="90" />
+          <input id="bpmInput" type="number" min="40" max="280" step="1" value="80" />
+        </label>
+        <label class="slider bpm-slider">
+          节拍器速度
+          <input id="bpmRange" type="range" min="40" max="280" step="1" value="80" />
+          <span id="bpmRangeVal">80</span>
         </label>
       </div>
 
