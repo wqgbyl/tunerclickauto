@@ -22,6 +22,12 @@ const btnStopPlay = $("btnStopPlay");
 const metOn = $("metOn");
 const metGainPlay = $("metGainPlay");
 const metGainPlayVal = $("metGainPlayVal");
+const metSoloStart = $("metSoloStart");
+const metSoloStop = $("metSoloStop");
+const metSoloStatus = $("metSoloStatus");
+const metSoloGain = $("metSoloGain");
+const metSoloGainVal = $("metSoloGainVal");
+const meterButtons = Array.from(document.querySelectorAll(".meter-btn"));
 const btnExportVideo = $("btnExportVideo");
 const exportStatus = $("exportStatus");
 const exportLink = $("exportLink");
@@ -43,6 +49,10 @@ const repN = $("repN");
 const repTop = $("repTop");
 
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
+metSoloGain.addEventListener("input", () => {
+  metSoloGainVal.textContent = Number(metSoloGain.value).toFixed(2);
+  if (soloMetronome.gainNode) soloMetronome.gainNode.gain.value = Number(metSoloGain.value);
+});
 
 let audioCtx = null;
 let micStream = null;
@@ -104,17 +114,37 @@ let playback = {
   tempoTimers: [],
 };
 let exportProgressTimer = null;
+let soloMetronome = {
+  stopScheduler: null,
+  gainNode: null,
+  meter: 2,
+};
 
 btnStart.addEventListener("click", startRecording);
 btnStop.addEventListener("click", stopRecording);
 btnPlay.addEventListener("click", play);
 btnStopPlay.addEventListener("click", stopPlayback);
+metSoloStart.addEventListener("click", startSoloMetronome);
+metSoloStop.addEventListener("click", stopSoloMetronome);
 btnUploadAnalyze.addEventListener("click", analyzeUploadedAudio);
 btnExportVideo.addEventListener("click", exportVideo);
 btnExportPlayAudio.addEventListener("click", playAudioOnly);
 uploadAudio.addEventListener("change", () => {
   uploadStatus.textContent = uploadAudio.files?.[0]?.name || "未选择文件";
 });
+meterButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const meter = Number(btn.dataset.meter);
+    if (!Number.isFinite(meter)) return;
+    soloMetronome.meter = meter;
+    updateMeterButtons();
+    if (soloMetronome.stopScheduler) {
+      stopSoloMetronome();
+      startSoloMetronome();
+    }
+  });
+});
+updateMeterButtons();
 
 async function ensureAudioContext() {
   if (audioCtx) return audioCtx;
@@ -452,6 +482,58 @@ function resetUIForNewTake() {
 }
 
 function setStatus(s) { statusEl.textContent = s; }
+function setSoloStatus(s) { metSoloStatus.textContent = s; }
+
+function updateMeterButtons() {
+  meterButtons.forEach((btn) => {
+    const meter = Number(btn.dataset.meter);
+    btn.classList.toggle("active", meter === soloMetronome.meter);
+  });
+}
+
+async function startSoloMetronome() {
+  if (soloMetronome.stopScheduler) stopSoloMetronome();
+  metSoloStart.disabled = true;
+  metSoloStop.disabled = false;
+  setSoloStatus("启动中…");
+
+  const ctx = await ensureAudioContext();
+  await ctx.resume();
+
+  const bpm = getBpmPreset();
+  const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
+  const clickWeak = createClickBuffer(ctx, { freq: 1400, durationMs: 12 });
+  const gain = ctx.createGain();
+  gain.gain.value = Number(metSoloGain.value);
+  gain.connect(ctx.destination);
+
+  const t0 = ctx.currentTime + 0.05;
+  soloMetronome.stopScheduler = scheduleMetronome(ctx, {
+    bpm,
+    meter: soloMetronome.meter,
+    startTime: t0,
+    durationSec: Number.POSITIVE_INFINITY,
+    clickBufferStrong: clickStrong,
+    clickBufferWeak: clickWeak,
+    clickGainNode: gain,
+  });
+  soloMetronome.gainNode = gain;
+  setSoloStatus(`运行中（${soloMetronome.meter} 拍子，♩=${bpm}）`);
+}
+
+function stopSoloMetronome() {
+  if (soloMetronome.stopScheduler) {
+    soloMetronome.stopScheduler();
+    soloMetronome.stopScheduler = null;
+  }
+  if (soloMetronome.gainNode) {
+    try { soloMetronome.gainNode.disconnect(); } catch {}
+    soloMetronome.gainNode = null;
+  }
+  metSoloStart.disabled = false;
+  metSoloStop.disabled = true;
+  setSoloStatus("已停止");
+}
 
 function updateDetectedTempo(tempoResult) {
   detectedTempo = tempoResult;
