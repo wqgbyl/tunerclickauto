@@ -724,8 +724,13 @@ function analyzeAudioBuffer(buffer, { bpm }) {
     tSec = offset / sampleRate;
   }
 
-  const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
   const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
+  const tempoStability = computeTempoStability(
+    data,
+    sampleRate,
+    localHopSize,
+    detectedTempo?.bpm ?? bpm,
+  );
   const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize, {
     baseBpm: detectedTempo?.bpm ?? bpm,
     beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
