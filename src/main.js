@@ -725,17 +725,43 @@ function analyzeAudioBuffer(buffer, { bpm }) {
   }
 
   const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
-  const tempoStability = computeTempoStability(
+  const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize, {
+    baseBpm: detectedTempo?.bpm ?? bpm,
+    beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
+  });
+  const tempoStability = computeTempoStabilityFromBeats(
+    beatTimeline,
+    detectedTempo?.bpm ?? bpm,
+  ) ?? computeTempoStability(
     data,
     sampleRate,
     localHopSize,
     detectedTempo?.bpm ?? bpm,
   );
-  const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize, {
-    baseBpm: detectedTempo?.bpm ?? bpm,
-    beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
-  });
   return { pitchLog: pitchLogLocal, tempoStability, detectedTempo, beatTimeline };
+}
+
+function computeTempoStabilityFromBeats(beatTimeline, bpm) {
+  if (!isFinite(bpm) || bpm <= 0) return null;
+  if (!beatTimeline || !Array.isArray(beatTimeline.beatTimes)) return null;
+  const { beatTimes } = beatTimeline;
+  if (beatTimes.length < 3) return null;
+
+  const intervals = [];
+  for (let i = 1; i < beatTimes.length; i++) {
+    const interval = beatTimes[i] - beatTimes[i - 1];
+    if (interval > 0) intervals.push(interval);
+  }
+  if (intervals.length < 2) return null;
+
+  const intervalMean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+  const intervalVar = intervals.reduce((a, b) => a + (b - intervalMean) * (b - intervalMean), 0) / intervals.length;
+  const intervalStd = Math.sqrt(intervalVar);
+  const targetInterval = 60 / bpm;
+  const jitterRatio = intervalStd / intervalMean;
+  const offsetRatio = Math.abs(intervalMean - targetInterval) / targetInterval;
+  const penalty = Math.min(1, jitterRatio * 2 + offsetRatio * 1.5);
+  return Math.max(0, 1 - penalty) * 100;
 }
 
 function computeTempoStability(data, sampleRate, hopSizeLocal, bpm) {
