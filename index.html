@@ -26,6 +26,29 @@
     </section>
 
     <section class="card">
+      <h2>节拍器（独立使用）</h2>
+      <div class="row">
+        <button id="metSoloStart">启动节拍器</button>
+        <button id="metSoloStop" disabled>停止节拍器</button>
+        <span id="metSoloStatus" class="status">未启动</span>
+      </div>
+      <div class="row">
+        <div class="meter-group">
+          <span class="label">拍子模式</span>
+          <button class="meter-btn active" data-meter="2">2 拍子</button>
+          <button class="meter-btn" data-meter="3">3 拍子</button>
+          <button class="meter-btn" data-meter="4">4 拍子</button>
+        </div>
+        <label class="slider">
+          节拍器音量
+          <input type="range" id="metSoloGain" min="0" max="1" step="0.01" value="0.35" />
+          <span id="metSoloGainVal">0.35</span>
+        </label>
+      </div>
+      <p class="small">可直接启动节拍器练习，拍子模式与音量可随时调整。</p>
+    </section>
+
+    <section class="card">
       <h2>录音与实时音准</h2>
       <div class="row">
         <button id="btnStart">开始录音</button>
