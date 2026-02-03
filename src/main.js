@@ -38,6 +38,7 @@ const exportProgress = $("exportProgress");
 const exportPercent = $("exportPercent");
 const exportActions = $("exportActions");
 const btnExportPlayAudio = $("btnExportPlayAudio");
+const exportWithMetronome = $("exportWithMetronome");
 
 const uploadAudio = $("uploadAudio");
 const btnUploadAnalyze = $("btnUploadAnalyze");
@@ -728,15 +729,20 @@ async function exportVideo() {
   const musicGain = ctx.createGain();
   musicGain.gain.value = 1.0;
   const clickGain = ctx.createGain();
-  clickGain.gain.value = Number(metGainPlay.value);
+  const includeMetronome = exportWithMetronome?.checked ?? true;
+  clickGain.gain.value = includeMetronome ? Number(metGainPlay.value) : 0;
 
   musicGain.connect(dest);
   clickGain.connect(dest);
 
   src.connect(musicGain);
 
-  const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
-  const clickWeak = createClickBuffer(ctx, { freq: 1400, durationMs: 12 });
+  const clickStrong = includeMetronome
+    ? createClickBuffer(ctx, { freq: 1900, durationMs: 16 })
+    : null;
+  const clickWeak = includeMetronome
+    ? createClickBuffer(ctx, { freq: 1400, durationMs: 12 })
+    : null;
 
   const previewGain = ctx.createGain();
   previewGain.gain.value = 0;
@@ -753,12 +759,14 @@ async function exportVideo() {
     ? beatTimeline
     : { beatTimes: constantBeatTimes, bpms: constantBpms };
 
-  const stopScheduler = scheduleDynamicMetronome(ctx, activeTimeline, {
-    startTime: t0,
-    clickBufferStrong: clickStrong,
-    clickBufferWeak: clickWeak,
-    clickGainNode: clickGain,
-  });
+  const stopScheduler = includeMetronome
+    ? scheduleDynamicMetronome(ctx, activeTimeline, {
+        startTime: t0,
+        clickBufferStrong: clickStrong,
+        clickBufferWeak: clickWeak,
+        clickGainNode: clickGain,
+      })
+    : null;
 
   const combinedStream = new MediaStream([
     ...stream.getVideoTracks(),
@@ -846,7 +854,11 @@ async function exportVideo() {
 
     c2d.font = "400 26px system-ui, sans-serif";
     c2d.fillStyle = "#8b949e";
-    c2d.fillText("同步节拍器导出", centerX, centerY + 72);
+    c2d.fillText(
+      includeMetronome ? "同步节拍器导出" : "纯音乐导出",
+      centerX,
+      centerY + 72,
+    );
 
     c2d.font = "600 40px system-ui, sans-serif";
     c2d.fillStyle = "#f0f6fc";

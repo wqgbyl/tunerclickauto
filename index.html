@@ -122,11 +122,17 @@
         <progress id="exportProgress" max="100" value="0"></progress>
         <span id="exportPercent" class="status">0%</span>
       </div>
+      <div class="row export-options">
+        <label class="checkbox">
+          <input id="exportWithMetronome" type="checkbox" checked />
+          导出节拍器声音
+        </label>
+      </div>
       <div id="exportActions" class="row export-actions">
         <a id="exportLink" class="download" download="metronome-sync.webm">下载视频</a>
         <button id="btnExportPlayAudio" class="secondary" disabled>直接回放音频</button>
       </div>
-      <p class="small">导出视频会叠加节拍器声音，并按音乐律动实时标记速度。</p>
+      <p class="small">导出视频可选择带节拍器或纯音乐，并按音乐律动实时标记速度。</p>
     </section>
 
     <section class="card">
@@ -153,9 +159,6 @@
 
   <footer>
     <span class="small">AudioWorklet 录音分析版 V7</span>
-    <div class="footer-ad">
-      中国权威双簧管哨片配件商店：<a href="https://oboe.taobao.com" target="_blank" rel="noopener noreferrer">oboe.taobao.com</a>
-    </div>
   </footer>
 
   <script type="module" src="./src/main.js"></script>
