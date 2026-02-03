@@ -219,7 +219,7 @@ async function stopRecording() {
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
   const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
-  detectedTempo = report.detectedTempo;
+  updateDetectedTempo(report.detectedTempo);
   renderReport(report);
 
   btnStart.disabled = false;
@@ -351,6 +351,10 @@ function resetUIForNewTake() {
 
 function setStatus(s) { statusEl.textContent = s; }
 
+function updateDetectedTempo(tempoResult) {
+  detectedTempo = tempoResult;
+}
+
 async function analyzeUploadedAudio() {
   const file = uploadAudio.files?.[0];
   if (!file) {
@@ -368,7 +372,7 @@ async function analyzeUploadedAudio() {
     durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
-    detectedTempo = report.detectedTempo;
+    updateDetectedTempo(report.detectedTempo);
     renderReport(report);
 
     btnPlay.disabled = false;
