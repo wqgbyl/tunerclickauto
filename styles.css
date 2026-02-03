@@ -35,6 +35,11 @@ button{
   cursor:pointer;
   font-weight:600;
 }
+button.secondary{
+  background:transparent;
+  color:var(--accent);
+  border:1px solid var(--accent);
+}
 button[disabled]{opacity:.4;cursor:not-allowed}
 .status{color:var(--muted)}
 .download{
@@ -44,6 +49,31 @@ button[disabled]{opacity:.4;cursor:not-allowed}
   font-weight:600;
 }
 .download.show{display:inline}
+.export-progress,
+.export-actions{
+  display:none;
+}
+.export-progress.show,
+.export-actions.show{
+  display:flex;
+}
+.export-progress progress{
+  flex:1;
+  height:10px;
+  border-radius:999px;
+  overflow:hidden;
+  background:#0f1621;
+  border:1px solid var(--border);
+}
+.export-progress progress::-webkit-progress-bar{
+  background:#0f1621;
+}
+.export-progress progress::-webkit-progress-value{
+  background:var(--accent);
+}
+.export-progress progress::-moz-progress-bar{
+  background:var(--accent);
+}
 .grid{
   display:grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr));
