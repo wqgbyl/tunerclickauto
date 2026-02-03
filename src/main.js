@@ -236,6 +236,7 @@ async function stopRecording() {
   const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
   updateDetectedTempo(report.detectedTempo);
   beatTimeline = report.beatTimeline;
+  analyzedPitchLog = report.pitchLog || [];
   renderReport(report);
 
   btnStart.disabled = false;
@@ -543,29 +544,27 @@ async function exportVideo() {
   const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
   const clickWeak = createClickBuffer(ctx, { freq: 1400, durationMs: 12 });
 
+  const previewGain = ctx.createGain();
+  previewGain.gain.value = 0;
+  musicGain.connect(previewGain);
+  clickGain.connect(previewGain);
+  previewGain.connect(ctx.destination);
+
   const startDelay = 0.1;
   const t0 = ctx.currentTime + startDelay;
   const useDynamicBeats = !!(beatTimeline?.beatTimes?.length && beatTimeline.beatTimes.length >= 3);
+  const constantBeatTimes = buildConstantBeatTimes(getBpmPreset(), decodedAudioBuffer.duration);
+  const constantBpms = constantBeatTimes.map((t, i) => (i === 0 ? null : getBpmPreset()));
+  const activeTimeline = useDynamicBeats
+    ? beatTimeline
+    : { beatTimes: constantBeatTimes, bpms: constantBpms };
 
-  let stopScheduler = null;
-  if (useDynamicBeats) {
-    stopScheduler = scheduleDynamicMetronome(ctx, beatTimeline, {
-      startTime: t0,
-      clickBufferStrong: clickStrong,
-      clickBufferWeak: clickWeak,
-      clickGainNode: clickGain,
-    });
-  } else {
-    stopScheduler = scheduleMetronome(ctx, {
-      bpm: getBpmPreset(),
-      meter: 999999,
-      startTime: t0,
-      durationSec: decodedAudioBuffer.duration,
-      clickBufferStrong: clickStrong,
-      clickBufferWeak: clickStrong,
-      clickGainNode: clickGain,
-    });
-  }
+  const stopScheduler = scheduleDynamicMetronome(ctx, activeTimeline, {
+    startTime: t0,
+    clickBufferStrong: clickStrong,
+    clickBufferWeak: clickWeak,
+    clickGainNode: clickGain,
+  });
 
   const combinedStream = new MediaStream([
     ...stream.getVideoTracks(),
@@ -604,10 +603,8 @@ async function exportVideo() {
   };
 
   const durationSec = decodedAudioBuffer.duration;
-  const beatTimes = useDynamicBeats
-    ? beatTimeline.beatTimes
-    : buildConstantBeatTimes(getBpmPreset(), durationSec);
-  const beatBpms = useDynamicBeats ? beatTimeline.bpms : null;
+  const beatTimes = activeTimeline.beatTimes;
+  const beatBpms = activeTimeline.bpms;
   let beatIndex = 0;
   let lastBeatTime = 0;
   let currentBpm = useDynamicBeats
@@ -726,9 +723,11 @@ function analyzeAudioBuffer(buffer, { bpm }) {
 
   const tempoStability = computeTempoStability(data, sampleRate, localHopSize, bpm);
   const detectedTempo = tempoTracker.finalize({ minBPM: 40, maxBPM: 200 });
+  const hasReliableTempo = !!(detectedTempo?.bpm && detectedTempo?.confidence >= 0.2);
+  const baseBpm = hasReliableTempo ? detectedTempo.bpm : bpm;
   const beatTimeline = computeBeatTimeline(data, sampleRate, localHopSize, {
-    baseBpm: detectedTempo?.bpm ?? bpm,
-    beatOffsetSec: detectedTempo?.beatOffsetSec ?? 0,
+    baseBpm,
+    beatOffsetSec: hasReliableTempo ? detectedTempo.beatOffsetSec : 0,
   });
   return { pitchLog: pitchLogLocal, tempoStability, detectedTempo, beatTimeline };
 }
