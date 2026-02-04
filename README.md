@@ -40,6 +40,35 @@ export GITHUB_TOKEN="YOUR_TOKEN_HERE"
 python scripts/github-models-demo.py
 ```
 
+示例代码（可直接复制到你的后端工程中使用）：
+```python
+import os
+from azure.ai.inference import ChatCompletionsClient
+from azure.ai.inference.models import SystemMessage, UserMessage
+from azure.core.credentials import AzureKeyCredential
+
+endpoint = "https://models.github.ai/inference"
+model = "openai/gpt-4.1"
+token = os.environ["GITHUB_TOKEN"]
+
+client = ChatCompletionsClient(
+    endpoint=endpoint,
+    credential=AzureKeyCredential(token),
+)
+
+response = client.complete(
+    messages=[
+        SystemMessage("You are a helpful assistant."),
+        UserMessage("What is the capital of France?"),
+    ],
+    temperature=1.0,
+    top_p=1.0,
+    model=model
+)
+
+print(response.choices[0].message.content)
+```
+
 ### 4) 启动本地 AI API（供前端调用）
 前端会调用 `/api/ai-report`。可以用下面的 Flask 服务快速接入：
 ```bash
@@ -54,3 +83,21 @@ python scripts/ai_server.py
 - 在你的服务器端新增一个 API（Node/Python/Go 都可以）
 - API 内部调用 `azure.ai.inference`（或对应 SDK）
 - 前端只调用你自己的 API，避免暴露 Token
+
+## Node.js 示例（同步调用 Chat Completions）
+> 同样请勿把 Token 放到前端代码里。
+
+### 1) 安装依赖
+```bash
+npm install
+```
+
+### 2) 准备 Token
+```bash
+export GITHUB_TOKEN="YOUR_TOKEN_HERE"
+```
+
+### 3) 运行示例脚本
+```bash
+node scripts/github-models-node-sample.js
+```
