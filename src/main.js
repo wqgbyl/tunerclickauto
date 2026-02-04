@@ -407,6 +407,7 @@ async function stopRecording() {
       onSlow: () => setStatus("解码较慢，继续处理中…"),
       onStuck: () => setStatus("解码耗时较长，仍在处理…"),
     });
+    setStatus("分析中…");
   } catch (err) {
     console.error("stopRecording failed:", err);
     decodedAudioBuffer = null;
