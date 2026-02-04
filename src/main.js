@@ -389,6 +389,7 @@ async function stopRecording() {
 
   try {
     const blob = await stopMediaRecorderSafely();
+    setStatus("处理中…");
 
     if (!blob || blob.size === 0) {
       decodedAudioBuffer = null;
@@ -402,7 +403,10 @@ async function stopRecording() {
 
     const ctx = await ensureAudioContext();
     const arrayBuf = await blob.arrayBuffer();
-    decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
+    decodedAudioBuffer = await decodeAudioBufferWithTimeout(ctx, arrayBuf, {
+      onSlow: () => setStatus("解码较慢，继续处理中…"),
+      onStuck: () => setStatus("解码耗时较长，仍在处理…"),
+    });
   } catch (err) {
     console.error("stopRecording failed:", err);
     decodedAudioBuffer = null;
@@ -471,8 +475,41 @@ function stopMediaRecorderSafely() {
       finalize();
     };
 
-    try { mr.stop(); } catch { finalize(); }
+    try {
+      if (typeof mr.requestData === "function") {
+        try { mr.requestData(); } catch {}
+      }
+      mr.stop();
+    } catch {
+      finalize();
+    }
   });
+}
+
+async function decodeAudioBufferWithTimeout(
+  ctx,
+  arrayBuffer,
+  { onSlow, onStuck, slowTimeoutMs = 8000, stuckTimeoutMs = 20000 } = {},
+) {
+  const decodePromise = decodeAudioDataCompat(ctx, arrayBuffer.slice(0));
+  const slowTimer = setTimeout(() => {
+    if (typeof onSlow === "function") onSlow();
+  }, slowTimeoutMs);
+  const stuckTimer = setTimeout(() => {
+    if (typeof onStuck === "function") onStuck();
+  }, stuckTimeoutMs);
+
+  try {
+    return await decodePromise;
+  } catch (error) {
+    if (isLikelyWav(null, arrayBuffer)) {
+      return decodeWavToAudioBuffer(arrayBuffer, ctx);
+    }
+    throw error;
+  } finally {
+    clearTimeout(slowTimer);
+    clearTimeout(stuckTimer);
+  }
 }
 
 function scheduleDynamicMetronome(ctx, timeline, { startTime, clickBufferStrong, clickBufferWeak, clickGainNode }) {
