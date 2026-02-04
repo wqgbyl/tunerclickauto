@@ -838,7 +838,7 @@ function buildReportPayload({ overallScore, longNoteScore, tempoStability, topNo
     longNoteScore: Number.isFinite(longNoteScore) ? Number(longNoteScore.toFixed(1)) : null,
     tempoStability: Number.isFinite(tempoStability) ? Number(tempoStability.toFixed(1)) : null,
     topNotes,
-    detectedTempo: detectedTempo ? Number(detectedTempo.toFixed(1)) : null,
+    detectedTempo: Number.isFinite(detectedTempo?.bpm) ? Number(detectedTempo.bpm.toFixed(1)) : null,
     durationSec: Number(duration),
   };
 }
