@@ -870,25 +870,30 @@ async function submitAiQuestion() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    const text = await resp.text();
     let data = null;
     try {
-      data = await resp.json();
+      data = JSON.parse(text);
     } catch (parseErr) {
       console.error("AI response parse failed:", parseErr);
     }
     if (!resp.ok) {
-      const message = data?.error || data?.detail || `HTTP ${resp.status}`;
-      throw new Error(message);
+      aiAnswer.textContent = data?.detail || data?.error || text;
+      aiStatus.textContent = `AI 请求失败（${resp.status}）`;
+      aiAskBtn.disabled = false;
+      return;
     }
-    if (data?.error || data?.detail) {
-      throw new Error(data.error || data.detail);
+    if (typeof data?.report === "string" && data.report.length > 0) {
+      aiAnswer.textContent = data.report;
+      aiStatus.textContent = "完成";
+    } else {
+      aiAnswer.textContent = `${text}\n\nAI 返回为空`;
+      aiStatus.textContent = "AI 返回为空";
     }
-    aiAnswer.textContent = data?.answer || "未返回内容，请稍后重试。";
-    aiStatus.textContent = "完成（本次报表已提问）";
     canAskAi = false;
   } catch (err) {
     console.error(err);
-    aiAnswer.textContent = err?.message || "AI 请求失败，请稍后重试。";
+    aiAnswer.textContent = err?.message || "AI 请求失败（网络或解析错误）";
     aiStatus.textContent = "AI 请求失败";
     aiAskBtn.disabled = false;
   }
