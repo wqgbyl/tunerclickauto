@@ -182,6 +182,16 @@ async function ensureAudioContext() {
   return audioCtx;
 }
 
+function decodeAudioDataCompat(ctx, arrayBuffer) {
+  if (!ctx || !arrayBuffer) return Promise.reject(new Error("Invalid audio buffer"));
+  if (ctx.decodeAudioData.length >= 2) {
+    return new Promise((resolve, reject) => {
+      ctx.decodeAudioData(arrayBuffer, resolve, reject);
+    });
+  }
+  return ctx.decodeAudioData(arrayBuffer);
+}
+
 function getBpmPreset() {
   const bpm = Number(bpmInput.value);
   return clampBpm(bpm);
@@ -751,7 +761,7 @@ async function analyzeUploadedAudio() {
     const ctx = await ensureAudioContext();
     await ctx.resume();
     const buf = await file.arrayBuffer();
-    decodedAudioBuffer = await ctx.decodeAudioData(buf.slice(0));
+    decodedAudioBuffer = await decodeAudioDataCompat(ctx, buf.slice(0));
     durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
@@ -766,7 +776,8 @@ async function analyzeUploadedAudio() {
     setStatus("已上传音频，准备回放");
   } catch (err) {
     console.error(err);
-    uploadStatus.textContent = "解析失败，请尝试其他音频格式";
+    const typeLabel = file.type ? `${file.type}` : "未知格式";
+    uploadStatus.textContent = `解析失败（${typeLabel}），请尝试重新导出或转换为 44.1kHz/48kHz 的 WAV/MP3。`;
   }
 }
 
