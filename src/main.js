@@ -48,6 +48,10 @@ const repOverallScore = $("repOverallScore");
 const repLongNoteScore = $("repLongNoteScore");
 const repTempoStability = $("repTempoStability");
 const repTopNotes = $("repTopNotes");
+const aiQuestion = $("aiQuestion");
+const aiAskBtn = $("aiAskBtn");
+const aiStatus = $("aiStatus");
+const aiAnswer = $("aiAnswer");
 
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
 metSoloGain.addEventListener("input", () => {
@@ -63,6 +67,9 @@ let decodedAudioBuffer = null;
 let detectedTempo = null;
 let beatTimeline = null;
 let analyzedPitchLog = [];
+let reportVersion = 0;
+let canAskAi = false;
+let latestReportPayload = null;
 
 let workletNode = null;
 
@@ -130,6 +137,7 @@ metSoloStop.addEventListener("click", stopSoloMetronome);
 btnUploadAnalyze.addEventListener("click", analyzeUploadedAudio);
 btnExportVideo.addEventListener("click", exportVideo);
 btnExportPlayAudio.addEventListener("click", playAudioOnly);
+aiAskBtn.addEventListener("click", submitAiQuestion);
 uploadAudio.addEventListener("change", () => {
   uploadStatus.textContent = uploadAudio.files?.[0]?.name || "未选择文件";
 });
@@ -491,6 +499,11 @@ function renderReport(report) {
     repLongNoteScore.textContent = "—";
     repTempoStability.textContent = "—";
     repTopNotes.textContent = "—";
+    aiAnswer.textContent = "—";
+    aiStatus.textContent = "等待报表更新…";
+    aiAskBtn.disabled = true;
+    canAskAi = false;
+    latestReportPayload = null;
     return;
   }
   const { pitchLog, tempoStability } = report;
@@ -568,6 +581,19 @@ function renderReport(report) {
   const top = [...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([k,v])=>`${k}(${v})`).join(", ");
   repTopNotes.textContent = top || "—";
+
+  reportVersion += 1;
+  canAskAi = true;
+  latestReportPayload = buildReportPayload({
+    overallScore: scoreFromMeanAbs(meanAbs),
+    longNoteScore,
+    tempoStability,
+    topNotes: top || "—",
+    pitchLog,
+  });
+  aiStatus.textContent = "可以提问（本次报表限一次）";
+  aiAskBtn.disabled = false;
+  aiAnswer.textContent = "—";
 }
 
 function resetUIForNewTake() {
@@ -593,6 +619,65 @@ function resetUIForNewTake() {
   repLongNoteScore.textContent = "—";
   repTempoStability.textContent = "—";
   repTopNotes.textContent = "—";
+  aiQuestion.value = "";
+  aiAnswer.textContent = "—";
+  aiStatus.textContent = "等待报表更新…";
+  aiAskBtn.disabled = true;
+  canAskAi = false;
+  latestReportPayload = null;
+}
+
+function buildReportPayload({ overallScore, longNoteScore, tempoStability, topNotes, pitchLog }) {
+  const duration = pitchLog.length > 0
+    ? (pitchLog[pitchLog.length - 1].tSec - pitchLog[0].tSec).toFixed(2)
+    : "0.00";
+  return {
+    overallScore: Number.isFinite(overallScore) ? Number(overallScore.toFixed(1)) : null,
+    longNoteScore: Number.isFinite(longNoteScore) ? Number(longNoteScore.toFixed(1)) : null,
+    tempoStability: Number.isFinite(tempoStability) ? Number(tempoStability.toFixed(1)) : null,
+    topNotes,
+    detectedTempo: detectedTempo ? Number(detectedTempo.toFixed(1)) : null,
+    durationSec: Number(duration),
+  };
+}
+
+async function submitAiQuestion() {
+  const question = aiQuestion.value.trim();
+  if (!question) {
+    aiStatus.textContent = "请先输入问题";
+    return;
+  }
+  if (!canAskAi || !latestReportPayload) {
+    aiStatus.textContent = "本次报表已提问，请等待下一次报表更新";
+    return;
+  }
+
+  aiAskBtn.disabled = true;
+  aiStatus.textContent = "AI 分析中…";
+  aiAnswer.textContent = "生成中…";
+
+  const payload = {
+    question,
+    report: latestReportPayload,
+  };
+
+  try {
+    const resp = await fetch("/api/ai-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    aiAnswer.textContent = data.answer || "未返回内容，请稍后重试。";
+    aiStatus.textContent = "完成（本次报表已提问）";
+    canAskAi = false;
+  } catch (err) {
+    console.error(err);
+    aiAnswer.textContent = "当前没有可用的 AI 服务。请先在服务器端实现 /api/ai-report 接口，再重试。";
+    aiStatus.textContent = "未连接到 AI 服务";
+    aiAskBtn.disabled = false;
+  }
 }
 
 function setStatus(s) { statusEl.textContent = s; }
