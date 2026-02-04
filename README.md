@@ -54,3 +54,21 @@ python scripts/ai_server.py
 - 在你的服务器端新增一个 API（Node/Python/Go 都可以）
 - API 内部调用 `azure.ai.inference`（或对应 SDK）
 - 前端只调用你自己的 API，避免暴露 Token
+
+## Node.js 示例（同步调用 Chat Completions）
+> 同样请勿把 Token 放到前端代码里。
+
+### 1) 安装依赖
+```bash
+npm install
+```
+
+### 2) 准备 Token
+```bash
+export GITHUB_TOKEN="YOUR_TOKEN_HERE"
+```
+
+### 3) 运行示例脚本
+```bash
+node scripts/github-models-node-sample.js
+```
