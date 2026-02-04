@@ -2,6 +2,7 @@ import { PitchTracker } from "./dsp/pitchTracker.js";
 import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
 import { choosePulseAndGrouping, buildClickGrid } from "./beat_grid.js";
+import { freqToNote } from "./dsp/pitchUtils.js";
 
 const AI_BASE_URL = "https://oboetunner-navktmnknm.cn-hangzhou.fcapp.run";
 const $ = (id) => document.getElementById(id);
@@ -612,26 +613,116 @@ function scheduleClickLookahead(ctx, clicks, {
 
 function buildBeatGridPeaks() {
   if (beatTimeline?.beatTimes?.length) {
-    return beatTimeline.beatTimes.map((t) => ({ t, w: 1 }));
+    return beatTimeline.beatTimes.map((t) => ({ t, w: 1, isHead: false }));
   }
   if (Array.isArray(analyzedPitchLog) && analyzedPitchLog.length) {
     const noteEvents = buildNoteEventsFromPitchLog(analyzedPitchLog);
     if (noteEvents.length) {
-      return noteEvents.map((note) => ({ t: note.startSec, w: 1 }));
+      const peaks = noteEvents.map((note) => ({ t: note.startSec, w: 1, isHead: true }));
+      for (const note of noteEvents) {
+        const duration = (note.lastSec - note.startSec);
+        if (duration >= 0.6) {
+          peaks.push({ t: note.startSec + duration * 0.5, w: 0.35, isHead: false });
+        }
+      }
+      return peaks;
     }
-    return analyzedPitchLog.map((p) => ({ t: p.tSec, w: 1 }));
+    return analyzedPitchLog.map((p) => ({ t: p.tSec, w: 0.4, isHead: false }));
   }
   return [];
 }
 
+function mergeClosePeaks(peaks, minGapSec) {
+  if (!Array.isArray(peaks) || !peaks.length) return [];
+  const sorted = peaks
+    .map((p) => ({
+      t: Number(p.t),
+      w: Number.isFinite(p.w) ? p.w : 1,
+      isHead: !!p.isHead,
+    }))
+    .filter((p) => Number.isFinite(p.t))
+    .sort((a, b) => a.t - b.t);
+  const merged = [];
+  let clusterBest = null;
+  let clusterLast = null;
+  for (const p of sorted) {
+    if (clusterLast == null || (p.t - clusterLast) >= minGapSec) {
+      if (clusterBest) merged.push(clusterBest);
+      clusterBest = p;
+      clusterLast = p.t;
+      continue;
+    }
+    if (p.w > clusterBest.w || (p.w === clusterBest.w && p.isHead && !clusterBest.isHead)) {
+      clusterBest = p;
+    }
+    clusterLast = p.t;
+  }
+  if (clusterBest) merged.push(clusterBest);
+  return merged;
+}
+
+function midiToFreq(midi) {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+function smoothPitchLog(pitchLog) {
+  if (!Array.isArray(pitchLog) || pitchLog.length < 2) return pitchLog;
+  const windowSize = 7;
+  const alpha = 0.3;
+  const midiValues = pitchLog.map((item) => {
+    if (!Number.isFinite(item.freqHz) || item.freqHz <= 0) return null;
+    const midi = 69 + 12 * Math.log2(item.freqHz / 440);
+    return Number.isFinite(midi) ? midi : null;
+  });
+  const medianFiltered = midiValues.map((value, idx) => {
+    if (value == null) return null;
+    const start = Math.max(0, idx - Math.floor(windowSize / 2));
+    const end = Math.min(midiValues.length - 1, idx + Math.floor(windowSize / 2));
+    const window = [];
+    for (let i = start; i <= end; i++) {
+      const v = midiValues[i];
+      if (v != null) window.push(v);
+    }
+    if (!window.length) return value;
+    window.sort((a, b) => a - b);
+    return window[Math.floor(window.length / 2)];
+  });
+  const ema = [];
+  let prev = null;
+  for (let i = 0; i < medianFiltered.length; i++) {
+    const v = medianFiltered[i];
+    if (v == null) {
+      ema.push(prev);
+      continue;
+    }
+    const next = prev == null ? v : (alpha * v + (1 - alpha) * prev);
+    ema.push(next);
+    prev = next;
+  }
+  return pitchLog.map((item, idx) => {
+    const midi = ema[idx];
+    if (midi == null || !Number.isFinite(midi)) return item;
+    const freqHz = midiToFreq(midi);
+    const { noteName, cents } = freqToNote(freqHz);
+    return {
+      ...item,
+      freqHz,
+      noteName,
+      cents,
+      midi,
+    };
+  });
+}
+
 function buildNoteEventsFromPitchLog(pitchLog) {
   if (!Array.isArray(pitchLog) || pitchLog.length < 2) return [];
-  const span = pitchLog[pitchLog.length - 1].tSec - pitchLog[0].tSec;
+  const smoothed = smoothPitchLog(pitchLog);
+  const span = smoothed[smoothed.length - 1].tSec - smoothed[0].tSec;
   const avg = span / Math.max(1, pitchLog.length - 1);
   const stepSec = Math.min(0.2, Math.max(0.01, avg || 0.03));
   const segments = [];
   let current = null;
-  for (const item of pitchLog) {
+  for (const item of smoothed) {
     if (!current) {
       current = {
         noteName: item.noteName,
@@ -657,7 +748,10 @@ function buildNoteEventsFromPitchLog(pitchLog) {
 }
 
 function buildClickGridTimeline(durationSec, bpmEstimate) {
-  const peaks = buildBeatGridPeaks();
+  const peaksBefore = buildBeatGridPeaks();
+  const pulsePeriodEstimate = (Number.isFinite(bpmEstimate) && bpmEstimate > 0) ? (60 / bpmEstimate) : 0.6;
+  const minPeakGapSec = Math.max(0.09, 0.18 * pulsePeriodEstimate);
+  const peaks = mergeClosePeaks(peaksBefore, minPeakGapSec);
   const pulseInfo = choosePulseAndGrouping({ peaks, bpmEstimate });
   const { clicks, beats } = buildClickGrid({
     peaks,
@@ -671,6 +765,17 @@ function buildClickGridTimeline(durationSec, bpmEstimate) {
     const interval = t - beats[i - 1];
     if (interval <= 0) return null;
     return 60 / interval;
+  });
+  const pulseBpm = pulseInfo.pulsePeriod > 0 ? 60 / pulseInfo.pulsePeriod : 0;
+  const beatBpm = pulseInfo.beatPeriod > 0 ? 60 / pulseInfo.beatPeriod : 0;
+  console.log("beat grid debug", {
+    bpmEstimate,
+    pulseBpm,
+    grouping: pulseInfo.grouping,
+    beatBpm,
+    peaksBeforeMerge: peaksBefore.map((p) => p.t),
+    peaksAfterMerge: peaks.map((p) => p.t),
+    interleaveRunMax: pulseInfo.interleaveRunMax,
   });
   return { clicks, beats, bpms, pulseInfo };
 }
