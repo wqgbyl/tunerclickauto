@@ -1359,8 +1359,15 @@ function computeBeatTimeline(data, sampleRate, hopSizeLocal, { baseBpm, beatOffs
     sm[i] = acc / cnt;
   }
 
-  const mean = sm.reduce((a, b) => a + b, 0) / sm.length;
-  const variance = sm.reduce((a, b) => a + (b - mean) * (b - mean), 0) / sm.length;
+  let sum = 0;
+  for (let i = 0; i < sm.length; i++) sum += sm[i];
+  const mean = sum / sm.length;
+  let varianceAcc = 0;
+  for (let i = 0; i < sm.length; i++) {
+    const delta = sm[i] - mean;
+    varianceAcc += delta * delta;
+  }
+  const variance = varianceAcc / sm.length;
   const std = Math.sqrt(variance);
   const threshold = mean + std * 0.35;
 
