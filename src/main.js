@@ -2,6 +2,7 @@ import { PitchTracker } from "./dsp/pitchTracker.js";
 import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
 
+const AI_BASE_URL = "https://aireport-eight.vercel.app";
 const $ = (id) => document.getElementById(id);
 
 const btnStart = $("btnStart");
@@ -864,20 +865,31 @@ async function submitAiQuestion() {
   };
 
   try {
-    const resp = await fetch("/api/ai-report", {
+    const resp = await fetch(`${AI_BASE_URL}/api/ai-report`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    aiAnswer.textContent = data.answer || "未返回内容，请稍后重试。";
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      console.error("AI response parse failed:", parseErr);
+    }
+    if (!resp.ok) {
+      const message = data?.error || data?.detail || `HTTP ${resp.status}`;
+      throw new Error(message);
+    }
+    if (data?.error || data?.detail) {
+      throw new Error(data.error || data.detail);
+    }
+    aiAnswer.textContent = data?.answer || "未返回内容，请稍后重试。";
     aiStatus.textContent = "完成（本次报表已提问）";
     canAskAi = false;
   } catch (err) {
     console.error(err);
-    aiAnswer.textContent = "当前没有可用的 AI 服务。请先在服务器端实现 /api/ai-report 接口，再重试。";
-    aiStatus.textContent = "未连接到 AI 服务";
+    aiAnswer.textContent = err?.message || "AI 请求失败，请稍后重试。";
+    aiStatus.textContent = "AI 请求失败";
     aiAskBtn.disabled = false;
   }
 }
