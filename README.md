@@ -40,7 +40,20 @@ export GITHUB_TOKEN="YOUR_TOKEN_HERE"
 python scripts/github-models-demo.py
 ```
 
-### 4) 你的下一步
+### 4) 启动本地 AI API（供前端调用）
+前端会调用 `/api/ai-report`。可以用下面的 Flask 服务快速接入（并直接用它打开页面，避免跨域/代理问题）：
+```bash
+python -m pip install flask azure-ai-inference azure-core
+export GITHUB_TOKEN="YOUR_TOKEN_HERE"
+python scripts/ai_server.py
+```
+默认监听 `http://localhost:5050`，请直接打开：
+```
+http://localhost:5050
+```
+如果你仍希望前端跑在其他端口，请确保反向代理或 CORS 设置允许访问 `/api/ai-report`。
+
+### 5) 你的下一步
 如果要在本专案里“接入 AI”，建议做法是：
 - 在你的服务器端新增一个 API（Node/Python/Go 都可以）
 - API 内部调用 `azure.ai.inference`（或对应 SDK）
