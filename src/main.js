@@ -1,7 +1,7 @@
 import { PitchTracker } from "./dsp/pitchTracker.js";
 import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
-import { chooseBeatLevel, buildBeatGrid } from "./beat_grid.js";
+import { choosePulseAndGrouping, buildClickGrid } from "./beat_grid.js";
 
 const AI_BASE_URL = "https://oboetunner-navktmnknm.cn-hangzhou.fcapp.run";
 const $ = (id) => document.getElementById(id);
@@ -534,17 +534,13 @@ async function decodeAudioBufferWithTimeout(ctx, arrayBuffer) {
   }
 }
 
-function scheduleBeatGrid(ctx, beats, downbeats, { startTime, clickBufferStrong, clickBufferWeak, clickGainNode }) {
-  if (!beats?.length) return null;
+function scheduleClickGrid(ctx, clicks, { startTime, clickBuffer, clickGainNode }) {
+  if (!clicks?.length) return null;
   const sources = [];
-  let downbeatIndex = 0;
-  for (let i = 0; i < beats.length; i++) {
-    const when = startTime + beats[i];
+  for (let i = 0; i < clicks.length; i++) {
+    const when = startTime + clicks[i];
     const src = ctx.createBufferSource();
-    const isDownbeat = downbeats?.[downbeatIndex] != null
-      && Math.abs(beats[i] - downbeats[downbeatIndex]) < 1e-3;
-    if (isDownbeat) downbeatIndex += 1;
-    src.buffer = isDownbeat ? clickBufferStrong : clickBufferWeak;
+    src.buffer = clickBuffer;
     src.connect(clickGainNode);
     src.start(when);
     sources.push(src);
@@ -561,21 +557,56 @@ function buildBeatGridPeaks() {
     return beatTimeline.beatTimes.map((t) => ({ t, w: 1 }));
   }
   if (Array.isArray(analyzedPitchLog) && analyzedPitchLog.length) {
+    const noteEvents = buildNoteEventsFromPitchLog(analyzedPitchLog);
+    if (noteEvents.length) {
+      return noteEvents.map((note) => ({ t: note.startSec, w: 1 }));
+    }
     return analyzedPitchLog.map((p) => ({ t: p.tSec, w: 1 }));
   }
   return [];
 }
 
-function buildBeatGridTimeline(durationSec, bpmEstimate) {
+function buildNoteEventsFromPitchLog(pitchLog) {
+  if (!Array.isArray(pitchLog) || pitchLog.length < 2) return [];
+  const span = pitchLog[pitchLog.length - 1].tSec - pitchLog[0].tSec;
+  const avg = span / Math.max(1, pitchLog.length - 1);
+  const stepSec = Math.min(0.2, Math.max(0.01, avg || 0.03));
+  const segments = [];
+  let current = null;
+  for (const item of pitchLog) {
+    if (!current) {
+      current = {
+        noteName: item.noteName,
+        startSec: item.tSec,
+        lastSec: item.tSec,
+      };
+      continue;
+    }
+    const gap = item.tSec - current.lastSec;
+    if (item.noteName === current.noteName && gap <= stepSec * 2) {
+      current.lastSec = item.tSec;
+    } else {
+      segments.push(current);
+      current = {
+        noteName: item.noteName,
+        startSec: item.tSec,
+        lastSec: item.tSec,
+      };
+    }
+  }
+  if (current) segments.push(current);
+  return segments;
+}
+
+function buildClickGridTimeline(durationSec, bpmEstimate) {
   const peaks = buildBeatGridPeaks();
-  const basePeriod = 60 / bpmEstimate;
-  const level = chooseBeatLevel({ peaks, basePeriod });
-  const { beats, downbeats } = buildBeatGrid({
+  const pulseInfo = choosePulseAndGrouping({ peaks, bpmEstimate });
+  const { clicks, beats } = buildClickGrid({
     peaks,
     startTime: 0,
     endTime: durationSec,
-    period: level.period,
-    meter: 4,
+    pulsePeriod: pulseInfo.pulsePeriod,
+    grouping: pulseInfo.grouping,
   });
   const bpms = beats.map((t, i) => {
     if (i === 0) return null;
@@ -583,7 +614,7 @@ function buildBeatGridTimeline(durationSec, bpmEstimate) {
     if (interval <= 0) return null;
     return 60 / interval;
   });
-  return { beats, downbeats, bpms, level };
+  return { clicks, beats, bpms, pulseInfo };
 }
 
 function scheduleTempoUpdates(ctx, startTime, timeline, onTempo) {
@@ -634,25 +665,28 @@ async function play() {
   clickGain.gain.value = Number(metGainPlay.value);
   clickGain.connect(ctx.destination);
 
-  const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
-  const clickWeak = createClickBuffer(ctx, { freq: 1400, durationMs: 12 });
+  const clickBuffer = createClickBuffer(ctx, { freq: 1700, durationMs: 14 });
 
   const startDelay = 0.03;
   const t0 = ctx.currentTime + startDelay;
 
-  const beatGrid = buildBeatGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
+  const beatGrid = buildClickGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
   const stopScheduler = useMet
-    ? scheduleBeatGrid(ctx, beatGrid.beats, beatGrid.downbeats, {
+    ? scheduleClickGrid(ctx, beatGrid.clicks, {
         startTime: t0,
-        clickBufferStrong: clickStrong,
-        clickBufferWeak: clickWeak,
+        clickBuffer,
         clickGainNode: clickGain,
       })
     : null;
 
   const initialBpm = beatGrid.bpms?.[1] ?? beatGrid.bpms?.[0] ?? bpmEstimate;
+  const { pulsePeriod, beatPeriod, grouping, scores } = beatGrid.pulseInfo;
+  const pulseBpm = pulsePeriod > 0 ? 60 / pulsePeriod : 0;
+  const beatBpm = beatPeriod > 0 ? 60 / beatPeriod : 0;
   tempoLiveEl.textContent = `♩=${initialBpm.toFixed(0)}`;
-  tempoLevelEl.textContent = `${beatGrid.level.label} · ♩=${(60 / beatGrid.level.period).toFixed(0)}`;
+  tempoLevelEl.textContent =
+    `pulse=${pulseBpm.toFixed(1)} bpm · grouping=${grouping} · beat=${beatBpm.toFixed(1)} bpm` +
+    ` · score[g1=${scores.g1.toFixed(2)}, g2=${scores.g2.toFixed(2)}, g3=${scores.g3.toFixed(2)}]`;
   playback.tempoTimers = scheduleTempoUpdates(ctx, t0, { beatTimes: beatGrid.beats, bpms: beatGrid.bpms }, (tempo) => {
     tempoLiveEl.textContent = `♩=${tempo.toFixed(0)}`;
   });
@@ -1092,11 +1126,8 @@ async function exportVideo() {
 
   src.connect(musicGain);
 
-  const clickStrong = includeMetronome
-    ? createClickBuffer(ctx, { freq: 1900, durationMs: 16 })
-    : null;
-  const clickWeak = includeMetronome
-    ? createClickBuffer(ctx, { freq: 1400, durationMs: 12 })
+  const clickBuffer = includeMetronome
+    ? createClickBuffer(ctx, { freq: 1700, durationMs: 14 })
     : null;
 
   const previewGain = ctx.createGain();
@@ -1108,13 +1139,12 @@ async function exportVideo() {
   const startDelay = 0.1;
   const t0 = ctx.currentTime + startDelay;
   const bpmEstimate = Number.isFinite(detectedTempo?.bpm) ? detectedTempo.bpm : getBpmPreset();
-  const beatGrid = buildBeatGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
+  const beatGrid = buildClickGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
 
   const stopScheduler = includeMetronome
-    ? scheduleBeatGrid(ctx, beatGrid.beats, beatGrid.downbeats, {
+    ? scheduleClickGrid(ctx, beatGrid.clicks, {
         startTime: t0,
-        clickBufferStrong: clickStrong,
-        clickBufferWeak: clickWeak,
+        clickBuffer,
         clickGainNode: clickGain,
       })
     : null;
