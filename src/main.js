@@ -504,7 +504,7 @@ async function playAudioOnly() {
 }
 
 function renderReport(report) {
-  if (!report || !report.pitchLog || report.pitchLog.length === 0) {
+  if (!report) {
     repOverallScore.textContent = "—";
     repLongNoteScore.textContent = "—";
     repTempoStability.textContent = "—";
@@ -516,9 +516,12 @@ function renderReport(report) {
     latestReportPayload = null;
     return;
   }
-  const { pitchLog, tempoStability } = report;
-  const centsAbs = pitchLog.map(x => Math.abs(x.cents));
-  const meanAbs = centsAbs.reduce((a,b)=>a+b,0) / centsAbs.length;
+
+  const pitchLog = Array.isArray(report.pitchLog) ? report.pitchLog : [];
+  const hasPitchLog = pitchLog.length > 0;
+  const { tempoStability } = report;
+  const centsAbs = hasPitchLog ? pitchLog.map(x => Math.abs(x.cents)) : [];
+  const meanAbs = hasPitchLog ? centsAbs.reduce((a,b)=>a+b,0) / centsAbs.length : null;
 
   const scoreFromMeanAbs = (value) => {
     const score = 100 - value * 1.5;
@@ -535,31 +538,33 @@ function renderReport(report) {
   const stepSec = estimateStep();
   const segments = [];
   let current = null;
-  for (const item of pitchLog) {
-    if (!current) {
-      current = {
-        noteName: item.noteName,
-        startSec: item.tSec,
-        lastSec: item.tSec,
-        centsAbsSum: Math.abs(item.cents),
-        count: 1,
-      };
-      continue;
-    }
-    const gap = item.tSec - current.lastSec;
-    if (item.noteName === current.noteName && gap <= stepSec * 2) {
-      current.lastSec = item.tSec;
-      current.centsAbsSum += Math.abs(item.cents);
-      current.count += 1;
-    } else {
-      segments.push(current);
-      current = {
-        noteName: item.noteName,
-        startSec: item.tSec,
-        lastSec: item.tSec,
-        centsAbsSum: Math.abs(item.cents),
-        count: 1,
-      };
+  if (hasPitchLog) {
+    for (const item of pitchLog) {
+      if (!current) {
+        current = {
+          noteName: item.noteName,
+          startSec: item.tSec,
+          lastSec: item.tSec,
+          centsAbsSum: Math.abs(item.cents),
+          count: 1,
+        };
+        continue;
+      }
+      const gap = item.tSec - current.lastSec;
+      if (item.noteName === current.noteName && gap <= stepSec * 2) {
+        current.lastSec = item.tSec;
+        current.centsAbsSum += Math.abs(item.cents);
+        current.count += 1;
+      } else {
+        segments.push(current);
+        current = {
+          noteName: item.noteName,
+          startSec: item.tSec,
+          lastSec: item.tSec,
+          centsAbsSum: Math.abs(item.cents),
+          count: 1,
+        };
+      }
     }
   }
   if (current) segments.push(current);
@@ -582,7 +587,7 @@ function renderReport(report) {
       })()
     : null;
 
-  repOverallScore.textContent = `${scoreFromMeanAbs(meanAbs).toFixed(1)} / 100`;
+  repOverallScore.textContent = meanAbs === null ? "—" : `${scoreFromMeanAbs(meanAbs).toFixed(1)} / 100`;
   repLongNoteScore.textContent = longNoteScore === null ? "—" : `${longNoteScore.toFixed(1)} / 100`;
   repTempoStability.textContent = tempoStability === null ? "—" : `${tempoStability.toFixed(1)} / 100`;
 
@@ -595,11 +600,12 @@ function renderReport(report) {
   reportVersion += 1;
   canAskAi = true;
   latestReportPayload = buildReportPayload({
-    overallScore: scoreFromMeanAbs(meanAbs),
+    overallScore: meanAbs === null ? null : scoreFromMeanAbs(meanAbs),
     longNoteScore,
     tempoStability,
     topNotes: top || "—",
     pitchLog,
+    durationSec: decodedAudioBuffer?.duration,
   });
   aiStatus.textContent = "可以提问（本次报表限一次）";
   aiAskBtn.disabled = false;
@@ -637,10 +643,10 @@ function resetUIForNewTake() {
   latestReportPayload = null;
 }
 
-function buildReportPayload({ overallScore, longNoteScore, tempoStability, topNotes, pitchLog }) {
+function buildReportPayload({ overallScore, longNoteScore, tempoStability, topNotes, pitchLog, durationSec }) {
   const duration = pitchLog.length > 0
     ? (pitchLog[pitchLog.length - 1].tSec - pitchLog[0].tSec).toFixed(2)
-    : "0.00";
+    : (Number.isFinite(durationSec) ? durationSec.toFixed(2) : "0.00");
   return {
     overallScore: Number.isFinite(overallScore) ? Number(overallScore.toFixed(1)) : null,
     longNoteScore: Number.isFinite(longNoteScore) ? Number(longNoteScore.toFixed(1)) : null,
