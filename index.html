@@ -153,6 +153,18 @@
         <div class="rrow"><span class="rk">节拍速度稳定得分</span><span class="rv" id="repTempoStability">—</span></div>
         <div class="rrow"><span class="rk">主要音高分析</span><span class="rv" id="repTopNotes">—</span></div>
       </div>
+      <div class="report-ai">
+        <h3>AI 报表解读（每次报表可问一次）</h3>
+        <p class="small">请在下方输入你想问的问题（例如：哪里需要改进？我节拍哪里不稳？）。提交后需等下次报表更新才能再次提问。</p>
+        <div class="ai-form">
+          <textarea id="aiQuestion" rows="3" placeholder="输入你的问题…"></textarea>
+          <div class="row">
+            <button id="aiAskBtn" disabled>提交问题</button>
+            <span id="aiStatus" class="status">等待报表更新…</span>
+          </div>
+        </div>
+        <div class="ai-answer" id="aiAnswer">—</div>
+      </div>
     </section>
 
   </main>

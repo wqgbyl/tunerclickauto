@@ -26,6 +26,7 @@ main{max-width:980px;margin:0 auto;padding:0 18px 40px 18px}
   margin:14px 0;
 }
 h2{margin:0 0 12px 0;font-size:16px}
+h3{margin:18px 0 8px 0;font-size:14px}
 .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0}
 button{
   background:var(--accent);
@@ -114,6 +115,27 @@ code{background:#0f1621;border:1px solid var(--border);padding:2px 6px;border-ra
 .rrow{display:flex;justify-content:space-between;gap:12px;border:1px solid var(--border);border-radius:12px;padding:10px}
 .rk{color:var(--muted);font-size:13px}
 .rv{font-weight:700}
+.report-ai{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
+.ai-form textarea{
+  width:100%;
+  resize:vertical;
+  min-height:70px;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid var(--border);
+  background:#0f1621;
+  color:var(--fg);
+  font-family:inherit;
+}
+.ai-answer{
+  margin-top:10px;
+  padding:12px;
+  border-radius:12px;
+  border:1px solid var(--border);
+  background:#0f1621;
+  line-height:1.6;
+  white-space:pre-wrap;
+}
 @media (max-width: 900px){
   .grid{grid-template-columns: repeat(2, minmax(120px, 1fr));}
 }
