@@ -193,6 +193,7 @@ function decodeAudioDataCompat(ctx, arrayBuffer) {
 }
 
 function decodeWavToAudioBuffer(arrayBuffer, ctx) {
+  // WAV fallback decoder when browser decodeAudioData fails.
   const view = new DataView(arrayBuffer);
   const readAscii = (offset, length) => {
     let out = "";
