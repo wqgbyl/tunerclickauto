@@ -1,6 +1,7 @@
 import { PitchTracker } from "./dsp/pitchTracker.js";
 import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
+import { chooseBeatLevel, buildBeatGrid } from "./beat_grid.js";
 
 const AI_BASE_URL = "https://oboetunner-navktmnknm.cn-hangzhou.fcapp.run";
 const $ = (id) => document.getElementById(id);
@@ -19,6 +20,7 @@ const centsEl = $("cents");
 const tempoEl = $("tempo");
 const durEl = $("dur");
 const tempoLiveEl = $("tempoLive");
+const tempoLevelEl = $("tempoLevel");
 
 const btnPlay = $("btnPlay");
 const btnStopPlay = $("btnStopPlay");
@@ -532,13 +534,17 @@ async function decodeAudioBufferWithTimeout(ctx, arrayBuffer) {
   }
 }
 
-function scheduleDynamicMetronome(ctx, timeline, { startTime, clickBufferStrong, clickBufferWeak, clickGainNode }) {
-  if (!timeline?.beatTimes?.length) return null;
+function scheduleBeatGrid(ctx, beats, downbeats, { startTime, clickBufferStrong, clickBufferWeak, clickGainNode }) {
+  if (!beats?.length) return null;
   const sources = [];
-  for (let i = 0; i < timeline.beatTimes.length; i++) {
-    const when = startTime + timeline.beatTimes[i];
+  let downbeatIndex = 0;
+  for (let i = 0; i < beats.length; i++) {
+    const when = startTime + beats[i];
     const src = ctx.createBufferSource();
-    src.buffer = i % 4 === 0 ? clickBufferStrong : clickBufferWeak;
+    const isDownbeat = downbeats?.[downbeatIndex] != null
+      && Math.abs(beats[i] - downbeats[downbeatIndex]) < 1e-3;
+    if (isDownbeat) downbeatIndex += 1;
+    src.buffer = isDownbeat ? clickBufferStrong : clickBufferWeak;
     src.connect(clickGainNode);
     src.start(when);
     sources.push(src);
@@ -548,6 +554,36 @@ function scheduleDynamicMetronome(ctx, timeline, { startTime, clickBufferStrong,
       try { src.stop(); } catch {}
     }
   };
+}
+
+function buildBeatGridPeaks() {
+  if (beatTimeline?.beatTimes?.length) {
+    return beatTimeline.beatTimes.map((t) => ({ t, w: 1 }));
+  }
+  if (Array.isArray(analyzedPitchLog) && analyzedPitchLog.length) {
+    return analyzedPitchLog.map((p) => ({ t: p.tSec, w: 1 }));
+  }
+  return [];
+}
+
+function buildBeatGridTimeline(durationSec, bpmEstimate) {
+  const peaks = buildBeatGridPeaks();
+  const basePeriod = 60 / bpmEstimate;
+  const level = chooseBeatLevel({ peaks, basePeriod });
+  const { beats, downbeats } = buildBeatGrid({
+    peaks,
+    startTime: 0,
+    endTime: durationSec,
+    period: level.period,
+    meter: 4,
+  });
+  const bpms = beats.map((t, i) => {
+    if (i === 0) return null;
+    const interval = t - beats[i - 1];
+    if (interval <= 0) return null;
+    return 60 / interval;
+  });
+  return { beats, downbeats, bpms, level };
 }
 
 function scheduleTempoUpdates(ctx, startTime, timeline, onTempo) {
@@ -584,8 +620,8 @@ async function play() {
   stopPlayback();
 
   const bpm = getBpmPreset();
+  const bpmEstimate = Number.isFinite(detectedTempo?.bpm) ? detectedTempo.bpm : bpm;
   const useMet = metOn.checked;
-  const useDynamicBeats = !!(beatTimeline?.beatTimes?.length && beatTimeline.beatTimes.length >= 3);
 
   const src = ctx.createBufferSource();
   src.buffer = decodedAudioBuffer;
@@ -604,37 +640,22 @@ async function play() {
   const startDelay = 0.03;
   const t0 = ctx.currentTime + startDelay;
 
-  let stopScheduler = null;
-  if (useMet) {
-    if (useDynamicBeats) {
-      stopScheduler = scheduleDynamicMetronome(ctx, beatTimeline, {
+  const beatGrid = buildBeatGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
+  const stopScheduler = useMet
+    ? scheduleBeatGrid(ctx, beatGrid.beats, beatGrid.downbeats, {
         startTime: t0,
         clickBufferStrong: clickStrong,
         clickBufferWeak: clickWeak,
         clickGainNode: clickGain,
-      });
-    } else {
-      stopScheduler = scheduleMetronome(ctx, {
-        bpm,
-        meter: 999999,
-        startTime: t0,
-        durationSec: decodedAudioBuffer.duration,
-        clickBufferStrong: clickStrong,
-        clickBufferWeak: clickStrong,
-        clickGainNode: clickGain,
-      });
-    }
-  }
+      })
+    : null;
 
-  if (useDynamicBeats) {
-    const initialBpm = beatTimeline.bpms?.[1] ?? beatTimeline.bpms?.[0] ?? bpm;
-    tempoLiveEl.textContent = `♩=${initialBpm.toFixed(0)}`;
-    playback.tempoTimers = scheduleTempoUpdates(ctx, t0, beatTimeline, (tempo) => {
-      tempoLiveEl.textContent = `♩=${tempo.toFixed(0)}`;
-    });
-  } else {
-    tempoLiveEl.textContent = `♩=${bpm}`;
-  }
+  const initialBpm = beatGrid.bpms?.[1] ?? beatGrid.bpms?.[0] ?? bpmEstimate;
+  tempoLiveEl.textContent = `♩=${initialBpm.toFixed(0)}`;
+  tempoLevelEl.textContent = `${beatGrid.level.label} · ♩=${(60 / beatGrid.level.period).toFixed(0)}`;
+  playback.tempoTimers = scheduleTempoUpdates(ctx, t0, { beatTimes: beatGrid.beats, bpms: beatGrid.bpms }, (tempo) => {
+    tempoLiveEl.textContent = `♩=${tempo.toFixed(0)}`;
+  });
 
   src.connect(musicGain);
   src.start(t0);
@@ -657,6 +678,7 @@ function stopPlayback() {
   btnStopPlay.disabled = true;
   if (decodedAudioBuffer) setStatus("已录制，准备回放");
   tempoLiveEl.textContent = "—";
+  tempoLevelEl.textContent = "—";
 }
 
 async function playAudioOnly() {
@@ -1085,15 +1107,11 @@ async function exportVideo() {
 
   const startDelay = 0.1;
   const t0 = ctx.currentTime + startDelay;
-  const useDynamicBeats = !!(beatTimeline?.beatTimes?.length && beatTimeline.beatTimes.length >= 3);
-  const constantBeatTimes = buildConstantBeatTimes(getBpmPreset(), decodedAudioBuffer.duration);
-  const constantBpms = constantBeatTimes.map((t, i) => (i === 0 ? null : getBpmPreset()));
-  const activeTimeline = useDynamicBeats
-    ? beatTimeline
-    : { beatTimes: constantBeatTimes, bpms: constantBpms };
+  const bpmEstimate = Number.isFinite(detectedTempo?.bpm) ? detectedTempo.bpm : getBpmPreset();
+  const beatGrid = buildBeatGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
 
   const stopScheduler = includeMetronome
-    ? scheduleDynamicMetronome(ctx, activeTimeline, {
+    ? scheduleBeatGrid(ctx, beatGrid.beats, beatGrid.downbeats, {
         startTime: t0,
         clickBufferStrong: clickStrong,
         clickBufferWeak: clickWeak,
@@ -1138,13 +1156,11 @@ async function exportVideo() {
   };
 
   const durationSec = decodedAudioBuffer.duration;
-  const beatTimes = activeTimeline.beatTimes;
-  const beatBpms = activeTimeline.bpms;
+  const beatTimes = beatGrid.beats;
+  const beatBpms = beatGrid.bpms;
   let beatIndex = 0;
   let lastBeatTime = 0;
-  let currentBpm = useDynamicBeats
-    ? (beatBpms?.[1] ?? beatBpms?.[0] ?? getBpmPreset())
-    : getBpmPreset();
+  let currentBpm = beatBpms?.[1] ?? beatBpms?.[0] ?? bpmEstimate;
   const pitchData = Array.isArray(analyzedPitchLog) ? analyzedPitchLog : [];
   let pitchIndex = 0;
   let currentPitch = null;
@@ -1159,7 +1175,7 @@ async function exportVideo() {
     if (elapsed >= 0) {
       while (beatIndex < beatTimes.length && beatTimes[beatIndex] <= elapsed) {
         lastBeatTime = beatTimes[beatIndex];
-        if (useDynamicBeats && beatBpms?.[beatIndex]) {
+        if (beatBpms?.[beatIndex]) {
           currentBpm = beatBpms[beatIndex];
         }
         beatIndex++;
@@ -1451,14 +1467,4 @@ function computeBeatTimeline(data, sampleRate, hopSizeLocal, { baseBpm, beatOffs
     return Math.max(bpmMin, Math.min(bpmMax, bpm));
   });
   return { beatTimes, bpms };
-}
-
-function buildConstantBeatTimes(bpm, durationSec) {
-  if (!isFinite(bpm) || bpm <= 0) return [];
-  const interval = 60 / bpm;
-  const beats = [];
-  for (let t = 0; t <= durationSec + 0.001; t += interval) {
-    beats.push(t);
-  }
-  return beats;
 }
