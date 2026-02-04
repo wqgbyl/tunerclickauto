@@ -48,6 +48,10 @@ const repOverallScore = $("repOverallScore");
 const repLongNoteScore = $("repLongNoteScore");
 const repTempoStability = $("repTempoStability");
 const repTopNotes = $("repTopNotes");
+const aiQuestion = $("aiQuestion");
+const aiAskBtn = $("aiAskBtn");
+const aiStatus = $("aiStatus");
+const aiAnswer = $("aiAnswer");
 
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
 metSoloGain.addEventListener("input", () => {
@@ -63,6 +67,9 @@ let decodedAudioBuffer = null;
 let detectedTempo = null;
 let beatTimeline = null;
 let analyzedPitchLog = [];
+let reportVersion = 0;
+let canAskAi = false;
+let latestReportPayload = null;
 
 let workletNode = null;
 
@@ -130,6 +137,7 @@ metSoloStop.addEventListener("click", stopSoloMetronome);
 btnUploadAnalyze.addEventListener("click", analyzeUploadedAudio);
 btnExportVideo.addEventListener("click", exportVideo);
 btnExportPlayAudio.addEventListener("click", playAudioOnly);
+aiAskBtn.addEventListener("click", submitAiQuestion);
 uploadAudio.addEventListener("change", () => {
   uploadStatus.textContent = uploadAudio.files?.[0]?.name || "未选择文件";
 });
@@ -172,6 +180,95 @@ async function ensureAudioContext() {
   audioCtx = new AudioContext({ latencyHint: "interactive" });
   await audioCtx.audioWorklet.addModule("./src/audio/audio-worklet-processor.js");
   return audioCtx;
+}
+
+function decodeAudioDataCompat(ctx, arrayBuffer) {
+  if (!ctx || !arrayBuffer) return Promise.reject(new Error("Invalid audio buffer"));
+  if (ctx.decodeAudioData.length >= 2) {
+    return new Promise((resolve, reject) => {
+      ctx.decodeAudioData(arrayBuffer, resolve, reject);
+    });
+  }
+  return ctx.decodeAudioData(arrayBuffer);
+}
+
+function decodeWavToAudioBuffer(arrayBuffer, ctx) {
+  const view = new DataView(arrayBuffer);
+  const readAscii = (offset, length) => {
+    let out = "";
+    for (let i = 0; i < length; i += 1) {
+      out += String.fromCharCode(view.getUint8(offset + i));
+    }
+    return out;
+  };
+
+  if (readAscii(0, 4) !== "RIFF" || readAscii(8, 4) !== "WAVE") {
+    throw new Error("Not a WAV file");
+  }
+
+  let offset = 12;
+  let fmtChunk = null;
+  let dataChunk = null;
+  while (offset + 8 <= view.byteLength) {
+    const id = readAscii(offset, 4);
+    const size = view.getUint32(offset + 4, true);
+    const chunkStart = offset + 8;
+    if (id === "fmt ") fmtChunk = { start: chunkStart, size };
+    if (id === "data") dataChunk = { start: chunkStart, size };
+    offset = chunkStart + size + (size % 2);
+  }
+
+  if (!fmtChunk || !dataChunk) {
+    throw new Error("Missing WAV chunks");
+  }
+
+  const audioFormat = view.getUint16(fmtChunk.start + 0, true);
+  const numChannels = view.getUint16(fmtChunk.start + 2, true);
+  const sampleRate = view.getUint32(fmtChunk.start + 4, true);
+  const bitsPerSample = view.getUint16(fmtChunk.start + 14, true);
+  const bytesPerSample = bitsPerSample / 8;
+  const frameCount = Math.floor(dataChunk.size / (numChannels * bytesPerSample));
+
+  if (!numChannels || !sampleRate || !frameCount) {
+    throw new Error("Invalid WAV metadata");
+  }
+
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+  const dataOffset = dataChunk.start;
+
+  const readSample = (sampleOffset) => {
+    if (audioFormat === 3) {
+      return view.getFloat32(sampleOffset, true);
+    }
+    switch (bitsPerSample) {
+      case 8:
+        return (view.getUint8(sampleOffset) - 128) / 128;
+      case 16:
+        return view.getInt16(sampleOffset, true) / 32768;
+      case 24: {
+        const b0 = view.getUint8(sampleOffset);
+        const b1 = view.getUint8(sampleOffset + 1);
+        const b2 = view.getUint8(sampleOffset + 2);
+        let value = b0 | (b1 << 8) | (b2 << 16);
+        if (value & 0x800000) value |= 0xff000000;
+        return value / 8388608;
+      }
+      case 32:
+        return view.getInt32(sampleOffset, true) / 2147483648;
+      default:
+        throw new Error(`Unsupported WAV bit depth: ${bitsPerSample}`);
+    }
+  };
+
+  for (let ch = 0; ch < numChannels; ch += 1) {
+    const channelData = buffer.getChannelData(ch);
+    for (let i = 0; i < frameCount; i += 1) {
+      const sampleOffset = dataOffset + (i * numChannels + ch) * bytesPerSample;
+      channelData[i] = readSample(sampleOffset);
+    }
+  }
+
+  return buffer;
 }
 
 function getBpmPreset() {
@@ -491,6 +588,11 @@ function renderReport(report) {
     repLongNoteScore.textContent = "—";
     repTempoStability.textContent = "—";
     repTopNotes.textContent = "—";
+    aiAnswer.textContent = "—";
+    aiStatus.textContent = "等待报表更新…";
+    aiAskBtn.disabled = true;
+    canAskAi = false;
+    latestReportPayload = null;
     return;
   }
   const { pitchLog, tempoStability } = report;
@@ -568,6 +670,19 @@ function renderReport(report) {
   const top = [...counts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5)
     .map(([k,v])=>`${k}(${v})`).join(", ");
   repTopNotes.textContent = top || "—";
+
+  reportVersion += 1;
+  canAskAi = true;
+  latestReportPayload = buildReportPayload({
+    overallScore: scoreFromMeanAbs(meanAbs),
+    longNoteScore,
+    tempoStability,
+    topNotes: top || "—",
+    pitchLog,
+  });
+  aiStatus.textContent = "可以提问（本次报表限一次）";
+  aiAskBtn.disabled = false;
+  aiAnswer.textContent = "—";
 }
 
 function resetUIForNewTake() {
@@ -593,6 +708,65 @@ function resetUIForNewTake() {
   repLongNoteScore.textContent = "—";
   repTempoStability.textContent = "—";
   repTopNotes.textContent = "—";
+  aiQuestion.value = "";
+  aiAnswer.textContent = "—";
+  aiStatus.textContent = "等待报表更新…";
+  aiAskBtn.disabled = true;
+  canAskAi = false;
+  latestReportPayload = null;
+}
+
+function buildReportPayload({ overallScore, longNoteScore, tempoStability, topNotes, pitchLog }) {
+  const duration = pitchLog.length > 0
+    ? (pitchLog[pitchLog.length - 1].tSec - pitchLog[0].tSec).toFixed(2)
+    : "0.00";
+  return {
+    overallScore: Number.isFinite(overallScore) ? Number(overallScore.toFixed(1)) : null,
+    longNoteScore: Number.isFinite(longNoteScore) ? Number(longNoteScore.toFixed(1)) : null,
+    tempoStability: Number.isFinite(tempoStability) ? Number(tempoStability.toFixed(1)) : null,
+    topNotes,
+    detectedTempo: detectedTempo ? Number(detectedTempo.toFixed(1)) : null,
+    durationSec: Number(duration),
+  };
+}
+
+async function submitAiQuestion() {
+  const question = aiQuestion.value.trim();
+  if (!question) {
+    aiStatus.textContent = "请先输入问题";
+    return;
+  }
+  if (!canAskAi || !latestReportPayload) {
+    aiStatus.textContent = "本次报表已提问，请等待下一次报表更新";
+    return;
+  }
+
+  aiAskBtn.disabled = true;
+  aiStatus.textContent = "AI 分析中…";
+  aiAnswer.textContent = "生成中…";
+
+  const payload = {
+    question,
+    report: latestReportPayload,
+  };
+
+  try {
+    const resp = await fetch("/api/ai-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    aiAnswer.textContent = data.answer || "未返回内容，请稍后重试。";
+    aiStatus.textContent = "完成（本次报表已提问）";
+    canAskAi = false;
+  } catch (err) {
+    console.error(err);
+    aiAnswer.textContent = "当前没有可用的 AI 服务。请先在服务器端实现 /api/ai-report 接口，再重试。";
+    aiStatus.textContent = "未连接到 AI 服务";
+    aiAskBtn.disabled = false;
+  }
 }
 
 function setStatus(s) { statusEl.textContent = s; }
@@ -666,7 +840,16 @@ async function analyzeUploadedAudio() {
     const ctx = await ensureAudioContext();
     await ctx.resume();
     const buf = await file.arrayBuffer();
-    decodedAudioBuffer = await ctx.decodeAudioData(buf.slice(0));
+    try {
+      decodedAudioBuffer = await decodeAudioDataCompat(ctx, buf.slice(0));
+    } catch (err) {
+      const name = file.name?.toLowerCase() || "";
+      if (file.type.includes("wav") || name.endsWith(".wav")) {
+        decodedAudioBuffer = decodeWavToAudioBuffer(buf, ctx);
+      } else {
+        throw err;
+      }
+    }
     durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
@@ -681,7 +864,8 @@ async function analyzeUploadedAudio() {
     setStatus("已上传音频，准备回放");
   } catch (err) {
     console.error(err);
-    uploadStatus.textContent = "解析失败，请尝试其他音频格式";
+    const typeLabel = file.type ? `${file.type}` : "未知格式";
+    uploadStatus.textContent = `解析失败（${typeLabel}），请尝试重新导出或转换为 44.1kHz/48kHz 的 PCM WAV/MP3。`;
   }
 }
 
