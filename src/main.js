@@ -425,17 +425,25 @@ async function stopRecording() {
   }
 
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
-
-  const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
-  updateDetectedTempo(report.detectedTempo);
-  beatTimeline = report.beatTimeline;
-  analyzedPitchLog = report.pitchLog || [];
-  renderReport(report);
-
-  btnStart.disabled = false;
-  btnPlay.disabled = false;
-  btnExportVideo.disabled = false;
-  setStatus("已录制，准备回放");
+  try {
+    const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
+    updateDetectedTempo(report.detectedTempo);
+    beatTimeline = report.beatTimeline;
+    analyzedPitchLog = report.pitchLog || [];
+    renderReport(report);
+    setStatus("已录制，准备回放");
+  } catch (err) {
+    console.error("analyzeAudioBuffer failed:", err);
+    beatTimeline = null;
+    analyzedPitchLog = [];
+    renderReport(null);
+    aiStatus.textContent = "报表生成失败，请重试";
+    setStatus("已录制，报表生成失败");
+  } finally {
+    btnStart.disabled = false;
+    btnPlay.disabled = false;
+    btnExportVideo.disabled = false;
+  }
 }
 
 function stopMediaRecorderSafely() {
