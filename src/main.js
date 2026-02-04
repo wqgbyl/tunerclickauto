@@ -2,7 +2,7 @@ import { PitchTracker } from "./dsp/pitchTracker.js";
 import { TempoTracker } from "./dsp/tempoTracker.js";
 import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
 
-const AI_BASE_URL = "https://aireport-eight.vercel.app";
+const AI_BASE_URL = "https://oboetunner-navktmnknm.cn-hangzhou.fcapp.run";
 const $ = (id) => document.getElementById(id);
 
 const btnStart = $("btnStart");
