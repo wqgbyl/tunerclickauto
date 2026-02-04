@@ -387,53 +387,63 @@ async function stopRecording() {
 
   if (analysisTimer) { clearInterval(analysisTimer); analysisTimer = null; }
 
-  const blob = await stopMediaRecorderSafely();
-
-  if (micStream) micStream.getTracks().forEach(t => t.stop());
-  micStream = null;
-
-  if (workletNode) {
-    workletNode.port.onmessage = null;
-    try { workletNode.disconnect(); } catch {}
-    workletNode = null;
-  }
-
-  if (!blob || blob.size === 0) {
-    decodedAudioBuffer = null;
-    durEl.textContent = "0.00s";
-    btnStart.disabled = false;
-    btnPlay.disabled = true;
-    btnExportVideo.disabled = true;
-    setStatus("未检测到录音内容，可直接重新录制");
-    return;
-  }
-
-  const ctx = await ensureAudioContext();
   try {
+    const blob = await stopMediaRecorderSafely();
+
+    if (!blob || blob.size === 0) {
+      decodedAudioBuffer = null;
+      durEl.textContent = "0.00s";
+      btnStart.disabled = false;
+      btnPlay.disabled = true;
+      btnExportVideo.disabled = true;
+      setStatus("未检测到录音内容，可直接重新录制");
+      return;
+    }
+
+    const ctx = await ensureAudioContext();
     const arrayBuf = await blob.arrayBuffer();
     decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
   } catch (err) {
+    console.error("stopRecording failed:", err);
     decodedAudioBuffer = null;
     durEl.textContent = "0.00s";
     btnStart.disabled = false;
     btnPlay.disabled = true;
     btnExportVideo.disabled = true;
-    setStatus("录音为空或解码失败，可直接重新录制");
+    aiStatus.textContent = "报表生成失败，请重试";
+    setStatus("录音处理失败，请重新录制");
     return;
+  } finally {
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+
+    if (workletNode) {
+      workletNode.port.onmessage = null;
+      try { workletNode.disconnect(); } catch {}
+      workletNode = null;
+    }
   }
 
   durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
-
-  const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
-  updateDetectedTempo(report.detectedTempo);
-  beatTimeline = report.beatTimeline;
-  analyzedPitchLog = report.pitchLog || [];
-  renderReport(report);
-
-  btnStart.disabled = false;
-  btnPlay.disabled = false;
-  btnExportVideo.disabled = false;
-  setStatus("已录制，准备回放");
+  try {
+    const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
+    updateDetectedTempo(report.detectedTempo);
+    beatTimeline = report.beatTimeline;
+    analyzedPitchLog = report.pitchLog || [];
+    renderReport(report);
+    setStatus("已录制，准备回放");
+  } catch (err) {
+    console.error("analyzeAudioBuffer failed:", err);
+    beatTimeline = null;
+    analyzedPitchLog = [];
+    renderReport(null);
+    aiStatus.textContent = "报表生成失败，请重试";
+    setStatus("已录制，报表生成失败");
+  } finally {
+    btnStart.disabled = false;
+    btnPlay.disabled = false;
+    btnExportVideo.disabled = false;
+  }
 }
 
 function stopMediaRecorderSafely() {
