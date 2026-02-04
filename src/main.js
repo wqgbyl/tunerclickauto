@@ -27,6 +27,8 @@ const btnStopPlay = $("btnStopPlay");
 const metOn = $("metOn");
 const metGainPlay = $("metGainPlay");
 const metGainPlayVal = $("metGainPlayVal");
+const clickOffsetRange = $("clickOffsetRange");
+const clickOffsetVal = $("clickOffsetVal");
 const metSoloStart = $("metSoloStart");
 const metSoloStop = $("metSoloStop");
 const metSoloStatus = $("metSoloStatus");
@@ -57,6 +59,16 @@ const aiStatus = $("aiStatus");
 const aiAnswer = $("aiAnswer");
 
 metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(metGainPlay.value).toFixed(2));
+if (clickOffsetRange && clickOffsetVal) {
+  const updateClickOffset = (ms) => {
+    globalClickOffsetSec = ms / 1000;
+    clickOffsetVal.textContent = `${ms.toFixed(0)} ms`;
+  };
+  clickOffsetRange.addEventListener("input", () => {
+    updateClickOffset(Number(clickOffsetRange.value));
+  });
+  updateClickOffset(Number(clickOffsetRange.value));
+}
 metSoloGain.addEventListener("input", () => {
   metSoloGainVal.textContent = Number(metSoloGain.value).toFixed(2);
   if (soloMetronome.gainNode) soloMetronome.gainNode.gain.value = Number(metSoloGain.value);
@@ -74,6 +86,11 @@ let analyzedPitchLog = [];
 let reportVersion = 0;
 let canAskAi = false;
 let latestReportPayload = null;
+let globalClickOffsetSec = -0.03;
+
+const LOOKAHEAD_MS = 25;
+const SCHEDULE_AHEAD_SEC = 0.15;
+const PLAY_START_DELAY_SEC = 0.2;
 
 let workletNode = null;
 let workletReady = false;
@@ -125,6 +142,7 @@ let playback = {
   metStart: 0,
   bpm: 0,
   tempoTimers: [],
+  clickTimeline: null,
 };
 let exportProgressTimer = null;
 let soloMetronome = {
@@ -534,21 +552,61 @@ async function decodeAudioBufferWithTimeout(ctx, arrayBuffer) {
   }
 }
 
-function scheduleClickGrid(ctx, clicks, { startTime, clickBuffer, clickGainNode }) {
+function computeClickAbsTime(clickT, playStartCtxTime, audioStartOffsetSec, offsetSec) {
+  return playStartCtxTime + (clickT - audioStartOffsetSec) + offsetSec;
+}
+
+function scheduleClickLookahead(ctx, clicks, {
+  playStartCtxTime,
+  audioStartOffsetSec,
+  clickBuffer,
+  clickGainNode,
+  scheduleAheadSec = SCHEDULE_AHEAD_SEC,
+  lookaheadMs = LOOKAHEAD_MS,
+  offsetSec = 0,
+  onClickScheduled,
+}) {
   if (!clicks?.length) return null;
-  const sources = [];
-  for (let i = 0; i < clicks.length; i++) {
-    const when = startTime + clicks[i];
+  let nextIndex = 0;
+  const scheduledSources = new Set();
+
+  const scheduleClickAt = (when) => {
     const src = ctx.createBufferSource();
     src.buffer = clickBuffer;
     src.connect(clickGainNode);
     src.start(when);
-    sources.push(src);
-  }
-  return () => {
-    for (const src of sources) {
-      try { src.stop(); } catch {}
+    scheduledSources.add(src);
+    src.onended = () => scheduledSources.delete(src);
+    onClickScheduled?.(src);
+  };
+
+  const tick = () => {
+    const now = ctx.currentTime;
+    const maxTime = now + scheduleAheadSec;
+    while (nextIndex < clicks.length) {
+      const clickT = clicks[nextIndex];
+      const absTime = computeClickAbsTime(clickT, playStartCtxTime, audioStartOffsetSec, offsetSec);
+      if (absTime < now) {
+        nextIndex += 1;
+        continue;
+      }
+      if (absTime <= maxTime) {
+        scheduleClickAt(absTime);
+        nextIndex += 1;
+        continue;
+      }
+      break;
     }
+  };
+
+  const intervalId = setInterval(tick, lookaheadMs);
+  tick();
+  return () => {
+    clearInterval(intervalId);
+    scheduledSources.forEach((src) => {
+      try { src.stop(); } catch {}
+    });
+    scheduledSources.clear();
   };
 }
 
@@ -653,6 +711,10 @@ async function play() {
   const bpm = getBpmPreset();
   const bpmEstimate = Number.isFinite(detectedTempo?.bpm) ? detectedTempo.bpm : bpm;
   const useMet = metOn.checked;
+  const audioStartOffsetSec = 0;
+
+  const beatGrid = buildClickGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
+  playback.clickTimeline = beatGrid;
 
   const src = ctx.createBufferSource();
   src.buffer = decodedAudioBuffer;
@@ -667,15 +729,25 @@ async function play() {
 
   const clickBuffer = createClickBuffer(ctx, { freq: 1700, durationMs: 14 });
 
-  const startDelay = 0.03;
-  const t0 = ctx.currentTime + startDelay;
+  const playStartCtxTime = ctx.currentTime + PLAY_START_DELAY_SEC;
+  const firstClickAbsTime = beatGrid.clicks?.length
+    ? computeClickAbsTime(beatGrid.clicks[0], playStartCtxTime, audioStartOffsetSec, globalClickOffsetSec)
+    : null;
+  const firstAudioAbsTime = playStartCtxTime;
+  console.log("playback timing", {
+    audioCtxTime: ctx.currentTime,
+    playStartCtxTime,
+    firstClickAbsTime,
+    firstAudioAbsTime,
+  });
 
-  const beatGrid = buildClickGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
   const stopScheduler = useMet
-    ? scheduleClickGrid(ctx, beatGrid.clicks, {
-        startTime: t0,
+    ? scheduleClickLookahead(ctx, beatGrid.clicks, {
+        playStartCtxTime,
+        audioStartOffsetSec,
         clickBuffer,
         clickGainNode: clickGain,
+        offsetSec: globalClickOffsetSec,
       })
     : null;
 
@@ -687,12 +759,17 @@ async function play() {
   tempoLevelEl.textContent =
     `pulse=${pulseBpm.toFixed(1)} bpm · grouping=${grouping} · beat=${beatBpm.toFixed(1)} bpm` +
     ` · score[g1=${scores.g1.toFixed(2)}, g2=${scores.g2.toFixed(2)}, g3=${scores.g3.toFixed(2)}]`;
-  playback.tempoTimers = scheduleTempoUpdates(ctx, t0, { beatTimes: beatGrid.beats, bpms: beatGrid.bpms }, (tempo) => {
-    tempoLiveEl.textContent = `♩=${tempo.toFixed(0)}`;
-  });
+  playback.tempoTimers = scheduleTempoUpdates(
+    ctx,
+    playStartCtxTime,
+    { beatTimes: beatGrid.beats, bpms: beatGrid.bpms },
+    (tempo) => {
+      tempoLiveEl.textContent = `♩=${tempo.toFixed(0)}`;
+    },
+  );
 
   src.connect(musicGain);
-  src.start(t0);
+  src.start(playStartCtxTime, audioStartOffsetSec);
 
   playback.source = src;
   playback.stopScheduler = stopScheduler;
@@ -1136,16 +1213,18 @@ async function exportVideo() {
   clickGain.connect(previewGain);
   previewGain.connect(ctx.destination);
 
-  const startDelay = 0.1;
-  const t0 = ctx.currentTime + startDelay;
+  const audioStartOffsetSec = 0;
+  const playStartCtxTime = ctx.currentTime + PLAY_START_DELAY_SEC;
   const bpmEstimate = Number.isFinite(detectedTempo?.bpm) ? detectedTempo.bpm : getBpmPreset();
   const beatGrid = buildClickGridTimeline(decodedAudioBuffer.duration, bpmEstimate);
 
   const stopScheduler = includeMetronome
-    ? scheduleClickGrid(ctx, beatGrid.clicks, {
-        startTime: t0,
+    ? scheduleClickLookahead(ctx, beatGrid.clicks, {
+        playStartCtxTime,
+        audioStartOffsetSec,
         clickBuffer,
         clickGainNode: clickGain,
+        offsetSec: globalClickOffsetSec,
       })
     : null;
 
@@ -1197,7 +1276,7 @@ async function exportVideo() {
 
   const drawFrame = () => {
     const now = ctx.currentTime;
-    const elapsed = now - t0;
+    const elapsed = now - playStartCtxTime;
     c2d.clearRect(0, 0, canvas.width, canvas.height);
     c2d.fillStyle = "#0b0f14";
     c2d.fillRect(0, 0, canvas.width, canvas.height);
@@ -1260,13 +1339,13 @@ async function exportVideo() {
   };
 
   recorder.start();
-  src.start(t0);
+  src.start(playStartCtxTime, audioStartOffsetSec);
   requestAnimationFrame(drawFrame);
 
   const durationMs = Math.max(1, Math.ceil(durationSec * 1000));
   exportProgressTimer = setInterval(() => {
     const now = ctx.currentTime;
-    const elapsed = Math.max(0, now - t0);
+    const elapsed = Math.max(0, now - playStartCtxTime);
     const ratio = Math.min(1, elapsed / durationSec);
     const percent = Math.round(ratio * 100);
     exportProgress.value = percent;
