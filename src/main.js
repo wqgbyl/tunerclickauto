@@ -59,6 +59,7 @@ metSoloGain.addEventListener("input", () => {
   if (soloMetronome.gainNode) soloMetronome.gainNode.gain.value = Number(metSoloGain.value);
 });
 
+const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
 let micStream = null;
 let mediaRecorder = null;
@@ -72,6 +73,7 @@ let canAskAi = false;
 let latestReportPayload = null;
 
 let workletNode = null;
+let workletReady = false;
 
 // analysis
 const frameSize = 1024;
@@ -177,9 +179,21 @@ bpmRange.addEventListener("input", () => syncBpmInputs(bpmRange.value, "range"))
 
 async function ensureAudioContext() {
   if (audioCtx) return audioCtx;
-  audioCtx = new AudioContext({ latencyHint: "interactive" });
-  await audioCtx.audioWorklet.addModule("./src/audio/audio-worklet-processor.js");
+  if (!AudioContextClass) {
+    setStatus("当前浏览器不支持 WebAudio，请使用最新版 Chrome/Edge。");
+    throw new Error("WebAudio not supported");
+  }
+  audioCtx = new AudioContextClass({ latencyHint: "interactive" });
   return audioCtx;
+}
+
+async function ensureWorklet(ctx) {
+  if (workletReady) return;
+  if (!ctx?.audioWorklet?.addModule) {
+    throw new Error("AudioWorklet not supported");
+  }
+  await ctx.audioWorklet.addModule("./src/audio/audio-worklet-processor.js");
+  workletReady = true;
 }
 
 function decodeAudioDataCompat(ctx, arrayBuffer) {
@@ -310,16 +324,34 @@ async function startRecording() {
   const bpm = getBpmPreset();
   tempoEl.textContent = `♩=${bpm}`;
 
-  setStatus("请求麦克风权限…");
-  const ctx = await ensureAudioContext();
-  await ctx.resume();
+  let ctx;
+  try {
+    setStatus("请求麦克风权限…");
+    ctx = await ensureAudioContext();
+    await ctx.resume();
+    await ensureWorklet(ctx);
+  } catch (err) {
+    console.error("startRecording init failed:", err);
+    setStatus("无法启动录音：浏览器不支持 AudioWorklet 或权限被拒绝。");
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    return;
+  }
 
   hopSize = Math.max(240, Math.round(ctx.sampleRate * 0.01)); // ~10ms
   hopMs = (hopSize / ctx.sampleRate) * 1000;
 
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-  });
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch (err) {
+    console.error("getUserMedia failed:", err);
+    setStatus("麦克风权限被拒绝或设备不可用。");
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    return;
+  }
 
   recordedChunks = [];
   mediaRecorder = new MediaRecorder(micStream);
@@ -537,8 +569,17 @@ async function play() {
   btnPlay.disabled = true;
   btnStopPlay.disabled = false;
 
-  const ctx = await ensureAudioContext();
-  await ctx.resume();
+  let ctx;
+  try {
+    ctx = await ensureAudioContext();
+    await ctx.resume();
+  } catch (err) {
+    console.error("play init failed:", err);
+    setStatus("无法启动回放：浏览器不支持 WebAudio。");
+    btnPlay.disabled = false;
+    btnStopPlay.disabled = true;
+    return;
+  }
   stopPlayback();
 
   const bpm = getBpmPreset();
@@ -622,8 +663,17 @@ async function playAudioOnly() {
   btnPlay.disabled = true;
   btnStopPlay.disabled = false;
 
-  const ctx = await ensureAudioContext();
-  await ctx.resume();
+  let ctx;
+  try {
+    ctx = await ensureAudioContext();
+    await ctx.resume();
+  } catch (err) {
+    console.error("playAudioOnly init failed:", err);
+    setStatus("无法启动回放：浏览器不支持 WebAudio。");
+    btnPlay.disabled = false;
+    btnStopPlay.disabled = true;
+    return;
+  }
   stopPlayback();
 
   const src = ctx.createBufferSource();
@@ -848,8 +898,17 @@ async function startSoloMetronome() {
   metSoloStop.disabled = false;
   setSoloStatus("启动中…");
 
-  const ctx = await ensureAudioContext();
-  await ctx.resume();
+  let ctx;
+  try {
+    ctx = await ensureAudioContext();
+    await ctx.resume();
+  } catch (err) {
+    console.error("startSoloMetronome init failed:", err);
+    setSoloStatus("无法启动：浏览器不支持 WebAudio。");
+    metSoloStart.disabled = false;
+    metSoloStop.disabled = true;
+    return;
+  }
 
   const bpm = getBpmPreset();
   const clickStrong = createClickBuffer(ctx, { freq: 1900, durationMs: 16 });
@@ -928,6 +987,9 @@ async function analyzeUploadedAudio() {
     console.error(err);
     const typeLabel = file.type ? `${file.type}` : "未知格式";
     uploadStatus.textContent = `解析失败（${typeLabel}），建议导出为 44.1kHz/48kHz PCM WAV 或 MP3 后重试。`;
+    if (!AudioContextClass) {
+      setStatus("无法解析：浏览器不支持 WebAudio。");
+    }
   }
 }
 
@@ -947,8 +1009,16 @@ async function exportVideo() {
     exportProgressTimer = null;
   }
 
-  const ctx = await ensureAudioContext();
-  await ctx.resume();
+  let ctx;
+  try {
+    ctx = await ensureAudioContext();
+    await ctx.resume();
+  } catch (err) {
+    console.error("exportVideo init failed:", err);
+    exportStatus.textContent = "导出失败：浏览器不支持 WebAudio";
+    btnExportVideo.disabled = false;
+    return;
+  }
   stopPlayback();
 
   const canvas = document.createElement("canvas");
