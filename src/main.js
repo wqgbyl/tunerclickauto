@@ -389,6 +389,7 @@ async function stopRecording() {
 
   try {
     const blob = await stopMediaRecorderSafely();
+    setStatus("处理中…");
 
     if (!blob || blob.size === 0) {
       decodedAudioBuffer = null;
@@ -402,7 +403,9 @@ async function stopRecording() {
 
     const ctx = await ensureAudioContext();
     const arrayBuf = await blob.arrayBuffer();
-    decodedAudioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
+    decodedAudioBuffer = await decodeAudioBufferWithTimeout(ctx, arrayBuf, {
+      onSlow: () => setStatus("解码较慢，继续处理中…"),
+    });
   } catch (err) {
     console.error("stopRecording failed:", err);
     decodedAudioBuffer = null;
@@ -471,8 +474,56 @@ function stopMediaRecorderSafely() {
       finalize();
     };
 
-    try { mr.stop(); } catch { finalize(); }
+    try {
+      if (typeof mr.requestData === "function") {
+        try { mr.requestData(); } catch {}
+      }
+      mr.stop();
+    } catch {
+      finalize();
+    }
   });
+}
+
+async function decodeAudioBufferWithTimeout(
+  ctx,
+  arrayBuffer,
+  { onSlow, slowTimeoutMs = 8000, maxWaitMs = 20000 } = {},
+) {
+  const decodePromise = decodeAudioDataCompat(ctx, arrayBuffer.slice(0));
+  try {
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const slowTimer = setTimeout(() => {
+        if (settled) return;
+        if (typeof onSlow === "function") onSlow();
+      }, slowTimeoutMs);
+      const maxTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("decode-timeout"));
+      }, maxWaitMs);
+
+      decodePromise.then((buffer) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(slowTimer);
+        clearTimeout(maxTimer);
+        resolve(buffer);
+      }).catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(slowTimer);
+        clearTimeout(maxTimer);
+        reject(error);
+      });
+    });
+  } catch (error) {
+    if (isLikelyWav(null, arrayBuffer)) {
+      return decodeWavToAudioBuffer(arrayBuffer, ctx);
+    }
+    throw error;
+  }
 }
 
 function scheduleDynamicMetronome(ctx, timeline, { startTime, clickBufferStrong, clickBufferWeak, clickGainNode }) {
