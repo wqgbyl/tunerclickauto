@@ -192,6 +192,108 @@ function decodeAudioDataCompat(ctx, arrayBuffer) {
   return ctx.decodeAudioData(arrayBuffer);
 }
 
+function decodeWavToAudioBuffer(arrayBuffer, ctx) {
+  if (!arrayBuffer || !ctx) throw new Error("Invalid WAV buffer");
+  const view = new DataView(arrayBuffer);
+  const text = (offset, length) =>
+    String.fromCharCode(...new Uint8Array(arrayBuffer.slice(offset, offset + length)));
+  if (text(0, 4) !== "RIFF" || text(8, 4) !== "WAVE") {
+    throw new Error("Not a RIFF/WAVE file");
+  }
+
+  let offset = 12;
+  let fmt = null;
+  let dataOffset = null;
+  let dataSize = null;
+  while (offset + 8 <= view.byteLength) {
+    const chunkId = text(offset, 4);
+    const chunkSize = view.getUint32(offset + 4, true);
+    const chunkDataOffset = offset + 8;
+    if (chunkId === "fmt ") {
+      fmt = {
+        audioFormat: view.getUint16(chunkDataOffset, true),
+        numChannels: view.getUint16(chunkDataOffset + 2, true),
+        sampleRate: view.getUint32(chunkDataOffset + 4, true),
+        byteRate: view.getUint32(chunkDataOffset + 8, true),
+        blockAlign: view.getUint16(chunkDataOffset + 12, true),
+        bitsPerSample: view.getUint16(chunkDataOffset + 14, true),
+      };
+    } else if (chunkId === "data") {
+      dataOffset = chunkDataOffset;
+      dataSize = chunkSize;
+    }
+    offset = chunkDataOffset + chunkSize + (chunkSize % 2);
+  }
+
+  if (!fmt || dataOffset == null || dataSize == null) {
+    throw new Error("Missing WAV chunks");
+  }
+
+  const bytesPerSample = fmt.bitsPerSample / 8;
+  if (!Number.isInteger(bytesPerSample) || bytesPerSample <= 0) {
+    throw new Error("Unsupported WAV bit depth");
+  }
+  const frameCount = Math.floor(dataSize / fmt.blockAlign);
+  if (!frameCount || frameCount <= 0) {
+    throw new Error("Empty WAV data");
+  }
+
+  const audioBuffer = ctx.createBuffer(fmt.numChannels, frameCount, fmt.sampleRate);
+  const isFloat = fmt.audioFormat === 3;
+  const isPCM = fmt.audioFormat === 1;
+  if (!isFloat && !isPCM) {
+    throw new Error("Unsupported WAV format");
+  }
+
+  for (let ch = 0; ch < fmt.numChannels; ch += 1) {
+    const channelData = audioBuffer.getChannelData(ch);
+    for (let i = 0; i < frameCount; i += 1) {
+      const sampleOffset = dataOffset + i * fmt.blockAlign + ch * bytesPerSample;
+      let sample = 0;
+      if (isFloat) {
+        sample =
+          fmt.bitsPerSample === 64
+            ? view.getFloat64(sampleOffset, true)
+            : view.getFloat32(sampleOffset, true);
+      } else {
+        if (fmt.bitsPerSample === 8) {
+          sample = (view.getUint8(sampleOffset) - 128) / 128;
+        } else if (fmt.bitsPerSample === 16) {
+          sample = view.getInt16(sampleOffset, true) / 32768;
+        } else if (fmt.bitsPerSample === 24) {
+          const b0 = view.getUint8(sampleOffset);
+          const b1 = view.getUint8(sampleOffset + 1);
+          const b2 = view.getUint8(sampleOffset + 2);
+          const raw = (b2 << 16) | (b1 << 8) | b0;
+          sample = (raw & 0x800000 ? raw | 0xff000000 : raw) / 8388608;
+        } else if (fmt.bitsPerSample === 32) {
+          sample = view.getInt32(sampleOffset, true) / 2147483648;
+        } else {
+          throw new Error("Unsupported PCM bit depth");
+        }
+      }
+      channelData[i] = Math.max(-1, Math.min(1, sample));
+    }
+  }
+
+  return audioBuffer;
+}
+
+function isLikelyWav(file, arrayBuffer) {
+  if (file?.type && file.type.toLowerCase().includes("wav")) return true;
+  if (file?.name && file.name.toLowerCase().endsWith(".wav")) return true;
+  if (!arrayBuffer || arrayBuffer.byteLength < 12) return false;
+  const view = new DataView(arrayBuffer);
+  const toText = (offset) =>
+    String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3),
+    );
+  return toText(0) === "RIFF" && toText(8) === "WAVE";
+}
+
 function getBpmPreset() {
   const bpm = Number(bpmInput.value);
   return clampBpm(bpm);
@@ -767,7 +869,15 @@ async function analyzeUploadedAudio() {
     const ctx = await ensureAudioContext();
     await ctx.resume();
     const buf = await file.arrayBuffer();
-    decodedAudioBuffer = await decodeAudioDataCompat(ctx, buf.slice(0));
+    try {
+      decodedAudioBuffer = await decodeAudioDataCompat(ctx, buf.slice(0));
+    } catch (decodeError) {
+      if (isLikelyWav(file, buf)) {
+        decodedAudioBuffer = decodeWavToAudioBuffer(buf, ctx);
+      } else {
+        throw decodeError;
+      }
+    }
     durEl.textContent = `${decodedAudioBuffer.duration.toFixed(2)}s`;
 
     const report = analyzeAudioBuffer(decodedAudioBuffer, { bpm: getBpmPreset() });
@@ -783,7 +893,7 @@ async function analyzeUploadedAudio() {
   } catch (err) {
     console.error(err);
     const typeLabel = file.type ? `${file.type}` : "未知格式";
-    uploadStatus.textContent = `解析失败（${typeLabel}），请尝试重新导出或转换为 44.1kHz/48kHz 的 WAV/MP3。`;
+    uploadStatus.textContent = `解析失败（${typeLabel}），建议导出为 44.1kHz/48kHz PCM WAV 或 MP3 后重试。`;
   }
 }
 
