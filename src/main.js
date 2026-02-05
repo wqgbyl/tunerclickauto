@@ -4,6 +4,10 @@ import { createClickBuffer, scheduleMetronome } from "./audio/metronome.js";
 import { choosePulseAndGrouping, buildClickGrid } from "./beat_grid.js";
 import { freqToNote } from "./dsp/pitchUtils.js";
 
+// --- global click offset state (must be defined before any use) ---
+let globalClickOffsetSec = 0;
+let globalClickOffsetSource = "init"; // optional debug
+
 const AI_BASE_URL = "https://oboetunner-navktmnknm.cn-hangzhou.fcapp.run";
 const $ = (id) => document.getElementById(id);
 
@@ -63,6 +67,7 @@ metGainPlay.addEventListener("input", () => metGainPlayVal.textContent = Number(
 if (clickOffsetRange && clickOffsetVal) {
   const updateClickOffset = (ms) => {
     globalClickOffsetSec = ms / 1000;
+    globalClickOffsetSource = "ui";
     clickOffsetVal.textContent = `${ms.toFixed(0)} ms`;
   };
   clickOffsetRange.addEventListener("input", () => {
@@ -87,7 +92,6 @@ let analyzedPitchLog = [];
 let reportVersion = 0;
 let canAskAi = false;
 let latestReportPayload = null;
-let globalClickOffsetSec = -0.03;
 
 const LOOKAHEAD_MS = 25;
 const SCHEDULE_AHEAD_SEC = 0.15;
